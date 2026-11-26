@@ -1,22 +1,52 @@
-﻿# AI PC Environment Audit & Portrait Generator (寻祎居 · 算力底牌侧写)
+﻿# AI PC Environment Audit & Portrait Generator (寻祎居 · 算力底牌侧写 / XunyiJu AI PC Audit)
 # Read-only checks. No downloads, installation, changes, or network requests.
 [CmdletBinding()]
 param(
+    [ValidateSet('zh', 'en', '')]
+    [string]$Language = '',
     [switch]$IncludeSoftwareList,
     [switch]$NoOpenBrowser,
     [string]$OutputDirectory = ''
 )
 
 $ErrorActionPreference = 'Continue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 $scriptDir = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($scriptDir)) { $scriptDir = (Get-Location).Path }
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $scriptDir 'AI_PC_Audit_Result'
 }
+
+# Language selection prompt at startup if not specified via parameter
+if ([string]::IsNullOrWhiteSpace($Language)) {
+    Write-Host ""
+    Write-Host "==========================================================" -ForegroundColor Cyan
+    Write-Host "  寻祎居 · 算力底牌侧写 | XunyiJu · AI PC Capability Audit" -ForegroundColor Cyan
+    Write-Host "  Running on PowerShell $($PSVersionTable.PSVersion)" -ForegroundColor DarkCyan
+    Write-Host "==========================================================" -ForegroundColor Cyan
+    Write-Host "  请选择语言 / Please select language:" -ForegroundColor Yellow
+    Write-Host "    [1] 简体中文 (Simplified Chinese)  [默认 / Default]" -ForegroundColor White
+    Write-Host "    [2] English" -ForegroundColor White
+    Write-Host ""
+    try {
+        $choice = Read-Host "  输入序号并回车 / Enter 1 or 2 (Press Enter for 简体中文)"
+        if ($choice -match '^(2|en|eng|english)$') {
+            $Language = 'en'
+        } else {
+            $Language = 'zh'
+        }
+    } catch {
+        $Language = 'zh'
+    }
+}
+
+$isEn = ($Language -eq 'en')
+
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-$reportPath = Join-Path $OutputDirectory 'AI_PC_Report.txt'
-$htmlPath   = Join-Path $OutputDirectory 'index.html'
-$jsonPath   = Join-Path $OutputDirectory 'AI_PC_Snapshot.json'
+$reportPath   = Join-Path $OutputDirectory 'AI_PC_Report.txt'
+$htmlPath     = Join-Path $OutputDirectory 'index.html'
+$jsonPath     = Join-Path $OutputDirectory 'AI_PC_Snapshot.json'
 $prevJsonPath = Join-Path $OutputDirectory 'AI_PC_Snapshot_Prev.json'
 
 if (Test-Path $jsonPath) {
@@ -64,26 +94,32 @@ function Add-Version([string]$Name, [string[]]$Arguments = @('--version')) {
     catch { Add-Line ("$Name : error - " + $_.Exception.Message) }
 }
 
-Write-Host "[1/4] 正在采集电脑硬件、磁盘与操作系统信息..." -ForegroundColor Cyan
+Write-Host ""
+if ($isEn) {
+    Write-Host "[1/4] Collecting hardware, disk, and OS information..." -ForegroundColor Cyan
+} else {
+    Write-Host "[1/4] 正在采集电脑硬件、磁盘与操作系统信息..." -ForegroundColor Cyan
+}
 
 $nowStr = Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
 $hourNow = (Get-Date).Hour
+$dayNameEn = (Get-Date).DayOfWeek.ToString()
 $dayOfWeekMap = @{ 'Monday'='周一'; 'Tuesday'='周二'; 'Wednesday'='周三'; 'Thursday'='周四'; 'Friday'='周五'; 'Saturday'='周六'; 'Sunday'='周日' }
-$cnDay = $dayOfWeekMap[(Get-Date).DayOfWeek.ToString()]
+$cnDay = $dayOfWeekMap[$dayNameEn]
 $timePeriod = if ($hourNow -lt 6) { '凌晨' } elseif ($hourNow -lt 12) { '上午' } elseif ($hourNow -lt 14) { '中午' } elseif ($hourNow -lt 18) { '下午' } else { '晚上' }
+$timePeriodEn = if ($hourNow -lt 6) { 'early morning' } elseif ($hourNow -lt 12) { 'morning' } elseif ($hourNow -lt 14) { 'noon' } elseif ($hourNow -lt 18) { 'afternoon' } else { 'evening' }
 
-# Structured data collection for HTML rendering
-$cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-$os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-$bb = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue
+$cs   = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+$os   = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+$bb   = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue
 $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
-$cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+$cpu  = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
 $rams = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
 $gpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)
 $disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction SilentlyContinue)
 
-$brand = if ($cs.Manufacturer) { $cs.Manufacturer.Trim() } else { '未知品牌' }
-$model = if ($cs.Model) { $cs.Model.Trim() } else { '通用 PC' }
+$brand = if ($cs.Manufacturer) { $cs.Manufacturer.Trim() } else { 'Unknown Brand' }
+$model = if ($cs.Model) { $cs.Model.Trim() } else { 'Generic PC' }
 $ramGB = if ($cs.TotalPhysicalMemory) { [math]::Round($cs.TotalPhysicalMemory / 1GB, 2) } else { 0 }
 $osCaption = if ($os.Caption) { $os.Caption.Trim() } else { 'Windows' }
 $osBuild = if ($os.BuildNumber) { $os.BuildNumber } else { '' }
@@ -97,25 +133,25 @@ $ramModulesSummary = if ($rams.Count -gt 0) {
     $stickGB = [math]::Round($rams[0].Capacity / 1GB, 0)
     $stickSpeed = $rams[0].Speed
     $stickMaker = ($rams[0].Manufacturer -replace '\s+',' ').Trim()
-    "$($rams.Count) 根 ${stickGB}GB ($stickMaker ${stickSpeed}MHz)"
+    "$($rams.Count)x ${stickGB}GB ($stickMaker ${stickSpeed}MHz)"
 } else {
     "${ramGB} GB"
 }
 
 $diskList = @()
-$maxFreeDisk = $null
 foreach ($d in $disks) {
     $tGB = [math]::Round($d.Size / 1GB, 1)
     $fGB = [math]::Round($d.FreeSpace / 1GB, 1)
-    $obj = [PSCustomObject]@{ Drive = $d.DeviceID; TotalGB = $tGB; FreeGB = $fGB }
-    $diskList += $obj
-    if (-not $maxFreeDisk -or $fGB -gt $maxFreeDisk.FreeGB) { $maxFreeDisk = $obj }
+    $diskList += [PSCustomObject]@{ Drive = $d.DeviceID; TotalGB = $tGB; FreeGB = $fGB }
 }
-$cDrive = $diskList | Where-Object { $_.Drive -eq 'C:' } | Select-Object -First 1
 
-Write-Host "[2/4] 正在检测显卡、显存占用与 CUDA 驱动状态..." -ForegroundColor Cyan
+if ($isEn) {
+    Write-Host "[2/4] Inspecting GPU, dedicated VRAM usage, and NVIDIA CUDA driver..." -ForegroundColor Cyan
+} else {
+    Write-Host "[2/4] 正在检测显卡、显存占用与 CUDA 驱动状态..." -ForegroundColor Cyan
+}
 
-$gpuName = '未检测到独立 NVIDIA 显卡'
+$gpuName = 'No dedicated NVIDIA GPU detected'
 $vramTotalMiB = 0
 $vramUsedMiB = 0
 $vramFreeMiB = 0
@@ -156,20 +192,22 @@ if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
 
 $nvccVer = Get-ToolVersion 'nvcc' @('--version')
 
-Write-Host "[3/4] 正在盘点编程工具链、Conda 环境与 PyTorch CUDA 状态..." -ForegroundColor Cyan
+if ($isEn) {
+    Write-Host "[3/4] Auditing developer toolchain, Conda environments, and PyTorch CUDA..." -ForegroundColor Cyan
+} else {
+    Write-Host "[3/4] 正在盘点编程工具链、Conda 环境与 PyTorch CUDA 状态..." -ForegroundColor Cyan
+}
 
 $pyVer     = Get-ToolVersion 'python'
 $condaVer  = Get-ToolVersion 'conda'
 $uvVer     = Get-ToolVersion 'uv'
 $gitVer    = Get-ToolVersion 'git'
 $nodeVer   = Get-ToolVersion 'node'
-$npmVer    = Get-ToolVersion 'npm'
 $pnpmVer   = Get-ToolVersion 'pnpm'
 $rustVer   = Get-ToolVersion 'rustc'
 $dotnetVer = Get-ToolVersion 'dotnet'
 $dockerVer = Get-ToolVersion 'docker'
 $codeVer   = Get-ToolVersion 'code'
-$ollamaVer = Get-ToolVersion 'ollama'
 $ffmpegVer = Get-ToolVersion 'ffmpeg' @('-version')
 
 $condaEnvs = @()
@@ -184,12 +222,11 @@ if (Get-Command conda -ErrorAction SilentlyContinue) {
     } catch {}
 }
 
-$torchVer = '未安装'
+$torchVer = 'Not Installed'
 $torchCudaVer = 'None'
 $torchCudaAvail = 'False'
-$transformersVer = '未安装'
-$diffusersVer = '未安装'
-$onnxVer = '未安装'
+$transformersVer = 'Not Installed'
+$onnxVer = 'Not Installed'
 
 if (Get-Command python -ErrorAction SilentlyContinue) {
     $pyMiniProbe = @'
@@ -199,7 +236,6 @@ def v(n):
     except: return "not_installed"
 print("TORCH=" + v("torch"))
 print("TRANSFORMERS=" + v("transformers"))
-print("DIFFUSERS=" + v("diffusers"))
 print("ONNX=" + v("onnxruntime"))
 try:
     import torch
@@ -214,7 +250,6 @@ except:
         foreach ($l in $probeLines) {
             if ($l -match '^TORCH=(.+)$') { $torchVer = $Matches[1] }
             if ($l -match '^TRANSFORMERS=(.+)$') { $transformersVer = $Matches[1] }
-            if ($l -match '^DIFFUSERS=(.+)$') { $diffusersVer = $Matches[1] }
             if ($l -match '^ONNX=(.+)$') { $onnxVer = $Matches[1] }
             if ($l -match '^CUDA_RT=(.+)$') { $torchCudaVer = $Matches[1] }
             if ($l -match '^CUDA_OK=(.+)$') { $torchCudaAvail = $Matches[1] }
@@ -329,18 +364,22 @@ Add-Line '3. A Python package list applies to the current environment only; Comf
 Add-Line '4. This script inventories software and hardware; it does not benchmark or guarantee AI model compatibility.'
 Add-Line '5. For a model-specific verdict, test the exact checkpoint, precision, workflow, resolution, frame count and GPU peak memory.'
 
-$report | Set-Content -LiteralPath $reportPath -Encoding UTF8
+$utf8Bom = New-Object System.Text.UTF8Encoding($true)
+[System.IO.File]::WriteAllLines($reportPath, $report, $utf8Bom)
 
-Write-Host "[4/4] 正在生成「你是谁 · AI 眼里的这台电脑」可视化侧写页面..." -ForegroundColor Cyan
+if ($isEn) {
+    Write-Host "[4/4] Generating bilingual interactive portrait webpage (index.html)..." -ForegroundColor Cyan
+} else {
+    Write-Host "[4/4] 正在生成中英双语「你是谁 · AI 眼里的这台电脑」可视化侧写页面..." -ForegroundColor Cyan
+}
 
-# Save current snapshot JSON for diffing
 $vramTotalGB = [math]::Round($vramTotalMiB / 1024, 1)
-$vramFreeGB  = [math]::Round($vramFreeMiB / 1024, 2)
-$vramUsedGB  = [math]::Round($vramUsedMiB / 1024, 2)
 $customEnvs  = @($condaEnvs | Where-Object { $_ -ne 'base' })
 $fpId = ("XYJ-{0}-{1}G-{2}C-E{3}" -f ($boardProduct -replace '[^A-Za-z0-9]',''), [math]::Round($vramTotalGB,0), $cpuCores, $customEnvs.Count).ToUpper()
 
 $snapshotObj = [ordered]@{
+    selectedLang = $Language
+    psVersion = $PSVersionTable.PSVersion.ToString()
     timestamp = $nowStr
     fingerprintId = $fpId
     brand = $brand
@@ -366,18 +405,18 @@ $snapshotObj = [ordered]@{
     gpuPerfState = $gpuPerfState
     disks = $diskList
     tools = [ordered]@{
-        python = if ($pyVer) { $pyVer } else { '未检出' }
-        conda  = if ($condaVer) { $condaVer } else { '未检出' }
-        uv     = if ($uvVer) { $uvVer } else { '未检出' }
-        git    = if ($gitVer) { $gitVer } else { '未检出' }
-        node   = if ($nodeVer) { $nodeVer } else { '未检出' }
-        pnpm   = if ($pnpmVer) { $pnpmVer } else { '未检出' }
-        rust   = if ($rustVer) { $rustVer } else { '未检出' }
-        dotnet = if ($dotnetVer) { $dotnetVer } else { '未检出' }
-        docker = if ($dockerVer) { $dockerVer } else { '未检出' }
-        code   = if ($codeVer) { $codeVer } else { '未检出' }
-        ffmpeg = if ($ffmpegVer) { '已就绪' } else { '未检出' }
-        nvcc   = if ($nvccVer) { '已安装' } else { '未安装系统级 nvcc' }
+        python = if ($pyVer) { $pyVer } else { 'Not found' }
+        conda  = if ($condaVer) { $condaVer } else { 'Not found' }
+        uv     = if ($uvVer) { $uvVer } else { 'Not found' }
+        git    = if ($gitVer) { $gitVer } else { 'Not found' }
+        node   = if ($nodeVer) { $nodeVer } else { 'Not found' }
+        pnpm   = if ($pnpmVer) { $pnpmVer } else { 'Not found' }
+        rust   = if ($rustVer) { $rustVer } else { 'Not found' }
+        dotnet = if ($dotnetVer) { $dotnetVer } else { 'Not found' }
+        docker = if ($dockerVer) { $dockerVer } else { 'Not found' }
+        code   = if ($codeVer) { $codeVer } else { 'Not found' }
+        ffmpeg = if ($ffmpegVer) { 'Ready' } else { 'Not found' }
+        nvcc   = if ($nvccVer) { 'Installed' } else { 'Not installed' }
     }
     condaEnvs = $customEnvs
     torch = [ordered]@{
@@ -389,13 +428,15 @@ $snapshotObj = [ordered]@{
     }
     timeInfo = [ordered]@{
         cnDay = $cnDay
+        enDay = $dayNameEn
         timePeriod = $timePeriod
+        timePeriodEn = $timePeriodEn
         hour = $hourNow
     }
 }
 
 $snapshotJsonStr = $snapshotObj | ConvertTo-Json -Depth 6
-$snapshotJsonStr | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+[System.IO.File]::WriteAllText($jsonPath, $snapshotJsonStr, $utf8Bom)
 
 $prevJsonStr = "null"
 if (Test-Path $prevJsonPath) {
@@ -404,14 +445,13 @@ if (Test-Path $prevJsonPath) {
 
 $rawReportEscaped = ($report -join "`n") | ConvertTo-Json
 
-# Generate standalone HTML with embedded JSON and humanized Chinese rendering
 $htmlTemplate = @'
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>寻祎居 · 算力底牌侧写 | AI 眼里的这台电脑</title>
+  <title>寻祎居 · 算力底牌侧写 | XunyiJu AI PC Portrait</title>
   <style>
     :root {
       --bg-base: #0b0d11;
@@ -468,8 +508,9 @@ $htmlTemplate = @'
     }
     .brand-title { font-size: 16px; font-weight: 600; color: var(--text-white); }
     .brand-sub { font-size: 13px; color: var(--text-muted); }
+    .topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
     .legend-bar {
-      display: flex; align-items: center; gap: 18px;
+      display: flex; align-items: center; gap: 16px;
       font-size: 12.5px; color: var(--text-secondary);
       background: var(--bg-card-subtle); padding: 6px 14px;
       border-radius: 999px; border: 1px solid var(--border-subtle);
@@ -487,6 +528,22 @@ $htmlTemplate = @'
     .legend-green-dash {
       display: inline-block; width: 16px; height: 0;
       border-bottom: 2px dashed var(--accent-green);
+    }
+    .lang-switch {
+      display: inline-flex; align-items: center;
+      background: var(--bg-card-subtle);
+      border: 1px solid var(--border-focus);
+      border-radius: 999px; padding: 2px;
+    }
+    .lang-btn {
+      appearance: none; border: none; background: transparent;
+      color: var(--text-secondary); font-size: 12px; font-weight: 600;
+      padding: 4px 12px; border-radius: 999px; cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .lang-btn.active {
+      background: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
     }
     .main-grid {
       display: grid;
@@ -638,7 +695,7 @@ $htmlTemplate = @'
     .appendix-card:hover { opacity: 1; }
     .appendix-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 12px; flex-wrap: wrap; }
     .appendix-title { font-size: 13.5px; font-weight: 600; color: var(--text-secondary); }
-    .appendix-filter { background: var(--bg-base); border: 1px solid var(--border-subtle); color: var(--text-primary); padding: 5px 11px; border-radius: 6px; font-size: 12px; width: 220px; outline: none; }
+    .appendix-filter { background: var(--bg-base); border: 1px solid var(--border-subtle); color: var(--text-primary); padding: 5px 11px; border-radius: 6px; font-size: 12px; width: 240px; outline: none; }
     .appendix-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 20px; font-size: 12px; font-family: var(--font-mono); }
     @media (max-width: 768px) { .appendix-grid { grid-template-columns: 1fr; } }
     .kv-row { display: flex; justify-content: space-between; align-items: baseline; padding: 5px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.04); gap: 10px; }
@@ -687,14 +744,16 @@ $htmlTemplate = @'
   <div class="container">
     <header class="topbar">
       <div class="brand-group">
-        <span class="brand-badge"><span class="dot"></span>寻祎居 · 算力底牌侧写</span>
-        <h1 class="brand-title">你是谁 · AI 眼里的这台电脑</h1>
-        <span class="brand-sub">零联网本地只读扫描</span>
+        <span class="brand-badge"><span class="dot"></span><span id="uiBrandBadge">寻祎居 · 算力底牌侧写</span></span>
+        <h1 class="brand-title" id="uiBrandTitle">你是谁 · AI 眼里的这台电脑</h1>
+        <span class="brand-sub" id="uiBrandSub">零联网本地只读扫描</span>
       </div>
-      <div class="legend-bar">
-        <span class="legend-item"><span class="legend-red-dot"></span>红点：会卡住你的短板</span>
-        <span class="legend-item"><span class="legend-white-fact"></span>白字：机子实测数据</span>
-        <span class="legend-item"><span class="legend-green-dash"></span>绿虚线：使用习惯侧写（悬停或点按看依据）</span>
+      <div class="topbar-right">
+        <div class="legend-bar" id="uiLegendBar"></div>
+        <div class="lang-switch" aria-label="Language Switcher">
+          <button type="button" class="lang-btn" id="btnLangZh">简体中文</button>
+          <button type="button" class="lang-btn" id="btnLangEn">English</button>
+        </div>
       </div>
     </header>
 
@@ -704,7 +763,7 @@ $htmlTemplate = @'
           <div class="card-header">
             <div>
               <div class="card-eyebrow">LOCAL AI CAPABILITY PORTRAIT</div>
-              <h2 class="card-title">「AI 模型眼里的你」</h2>
+              <h2 class="card-title" id="uiLeftTitle">「AI 模型眼里的你」</h2>
             </div>
             <div class="card-meta" id="metaTimestamp"></div>
           </div>
@@ -714,34 +773,34 @@ $htmlTemplate = @'
           <div class="fingerprint-box">
             <div class="fp-left">
               <div class="fp-label">
-                <span>本机特征指纹 ID</span>
-                <span class="fp-tag">本地生成</span>
+                <span id="uiFpLabel">本机特征指纹 ID</span>
+                <span class="fp-tag" id="uiFpTag">本地生成</span>
               </div>
               <div class="fp-id" id="fpHashText"></div>
               <div class="fp-sub" id="fpSubText"></div>
             </div>
             <div class="fp-diff">
               <div class="diff-title">
-                <span>跟上回扫描比有什么变化</span>
-                <span class="diff-badge" id="diffBadge">首次扫描</span>
+                <span id="uiDiffTitle">跟上回扫描比有什么变化</span>
+                <span class="diff-badge" id="diffBadge"></span>
               </div>
               <ul class="diff-list" id="diffList"></ul>
             </div>
           </div>
 
           <div class="action-bar">
-            <button class="btn btn-primary" id="btnCopyPortrait" type="button">📋 复制这段侧写</button>
-            <button class="btn" id="btnCopyJson" type="button">🧬 导出 JSON 快照</button>
-            <button class="btn" id="btnToggleClues" type="button">💡 展开所有判断依据</button>
-            <button class="btn" id="btnViewRaw" type="button">📄 看原始 Report.txt</button>
-            <button class="btn" id="btnCopyCmd" type="button">⚡ 复制重测命令</button>
+            <button class="btn btn-primary" id="btnCopyPortrait" type="button"></button>
+            <button class="btn" id="btnCopyJson" type="button"></button>
+            <button class="btn" id="btnToggleClues" type="button"></button>
+            <button class="btn" id="btnViewRaw" type="button"></button>
+            <button class="btn" id="btnCopyCmd" type="button"></button>
           </div>
         </article>
 
         <section class="appendix-card">
           <div class="appendix-header">
-            <div class="appendix-title" id="appendixTitle">全部探测项和读到的值</div>
-            <input type="search" id="appendixSearch" class="appendix-filter" placeholder="搜字段或值 (比如 cuda, 显存, 内存)..." />
+            <div class="appendix-title" id="appendixTitle"></div>
+            <input type="search" id="appendixSearch" class="appendix-filter" />
           </div>
           <div class="appendix-grid" id="appendixGrid"></div>
         </section>
@@ -752,16 +811,16 @@ $htmlTemplate = @'
           <div class="card-header" style="margin-bottom: 14px;">
             <div>
               <div class="card-eyebrow">BOTTLENECK &amp; EXPOSURE AUDIT</div>
-              <h2 class="card-title">「破绽与卡点诊断」</h2>
+              <h2 class="card-title" id="uiRightTitle">「破绽与卡点诊断」</h2>
             </div>
           </div>
 
           <div class="diag-hero">
             <div class="diag-count-wrap">
               <span class="diag-big-num" id="diagBigNum">0</span>
-              <span class="diag-count-text">处地方可能卡住你</span>
+              <span class="diag-count-text" id="uiDiagCountText">处地方可能卡住你</span>
             </div>
-            <span class="grade-badge" id="gradeBadge">评估中</span>
+            <span class="grade-badge" id="gradeBadge"></span>
           </div>
 
           <div class="segment-wrap">
@@ -771,13 +830,13 @@ $htmlTemplate = @'
 
           <div class="priority-box">
             <div class="priority-header">
-              <span class="priority-title">🔥 先改这几项</span>
-              <span class="priority-tag" id="priorityTag">优先处理</span>
+              <span class="priority-title" id="uiPriorityTitle">🔥 先改这几项</span>
+              <span class="priority-tag" id="priorityTag"></span>
             </div>
             <ul class="priority-list" id="priorityList"></ul>
           </div>
 
-          <div class="checklist-section-title">逐项大白话清单</div>
+          <div class="checklist-section-title" id="uiChecklistHeader">逐项大白话清单</div>
           <ul class="checklist" id="checklistContainer"></ul>
         </article>
       </aside>
@@ -785,7 +844,7 @@ $htmlTemplate = @'
   </div>
 
   <div class="clue-popover" id="cluePopover" role="tooltip">
-    <div class="pop-type" id="popType">判断依据</div>
+    <div class="pop-type" id="popType"></div>
     <div class="pop-field" id="popField"></div>
     <div class="pop-reason" id="popReason"></div>
   </div>
@@ -793,19 +852,23 @@ $htmlTemplate = @'
   <div class="modal-backdrop" id="rawModal">
     <div class="modal-box">
       <div class="modal-head">
-        <span>AI_PC_Report.txt（本地只读扫描原文）</span>
-        <button class="btn" id="btnCloseModal" type="button" style="padding: 4px 10px;">关闭 ✕</button>
+        <span id="uiModalTitle">AI_PC_Report.txt</span>
+        <button class="btn" id="btnCloseModal" type="button" style="padding: 4px 10px;">✕</button>
       </div>
       <pre class="modal-pre" id="rawReportContent"></pre>
     </div>
   </div>
 
-  <div class="toast" id="toast">已复制到剪贴板</div>
+  <div class="toast" id="toast"></div>
 
   <script>
     const SNAPSHOT = __SNAPSHOT_JSON__;
     const PREV_SNAPSHOT = __PREV_JSON__;
     const RAW_REPORT_TEXT = __RAW_REPORT_JSON__;
+
+    let currentLang = (SNAPSHOT.selectedLang === 'en') ? 'en' : 'zh';
+    let expanded = false;
+    let pinnedClue = null;
 
     function clue(type, text, field, reason) {
       const cls = type === 'red' ? 'clue clue-red' : type === 'infer' ? 'clue clue-infer' : 'clue clue-fact';
@@ -814,18 +877,58 @@ $htmlTemplate = @'
       return `<span class="${cls}" data-type="${type}" data-field="${escField}" data-reason="${escReason}">${text}</span>`;
     }
 
-    function buildPortrait(s) {
+    function buildPortrait(s, lang) {
       const vramGB = (s.vramTotalMiB / 1024).toFixed(0);
       const vramFreeGB = (s.vramFreeMiB / 1024).toFixed(2);
       const vramUsedGB = (s.vramUsedMiB / 1024).toFixed(2);
       const disks = s.disks || [];
       let biggestDisk = disks[0] || { Drive: 'C:', FreeGB: 0, TotalGB: 0 };
       disks.forEach(d => { if (d.FreeGB > biggestDisk.FreeGB) biggestDisk = d; });
+      const installedTools = Object.entries(s.tools).filter(([_, v]) => v && !String(v).includes('Not')).map(([k]) => k);
+      const envList = s.condaEnvs || [];
 
-      // P1: 归属与时空
+      if (lang === 'en') {
+        const p1 = `You are running ${clue('fact', s.os, 'OS: ' + s.os + ' (Build ' + s.osBuild + ')', 'Read directly from Windows CIM Win32_OperatingSystem.')} on an ${clue('fact', s.brand + ' ' + s.model, 'Model: ' + s.brand + ' ' + s.model + ' / Board ' + s.board, 'Hardware identity reported by the motherboard BIOS.')}. Out of ${disks.length} local drives, ${clue('infer', 'drive ' + biggestDisk.Drive + ' has ' + biggestDisk.FreeGB + ' GB sitting wide open', biggestDisk.Drive + ' Total ' + biggestDisk.TotalGB + ' GB / Free ' + biggestDisk.FreeGB + ' GB', 'The partition with the most free space is the natural home for multi-gigabyte model checkpoints.')}, which is where your heavy model weights belong.`;
+
+        const p2Parts = [];
+        if (s.vramTotalMiB > 0 && s.vramTotalMiB <= 8500 && s.ramGB <= 16.5) {
+          p2Parts.push(`${clue('red', vramGB + ' GB VRAM paired with ' + Math.round(s.ramGB) + ' GB system RAM is a tight squeeze', 'VRAM: ' + s.vramTotalMiB + ' MiB / RAM: ' + s.ramGB + ' GB (' + s.ramModules + ')', 'When a model overflows 8 GB VRAM, it offloads layers into system RAM. With 16 GB RAM, Windows leaves only ~7 GB free before hitting slow disk swap.')} when offloading large diffusion or video models`);
+        } else if (s.vramTotalMiB === 0) {
+          p2Parts.push(`${clue('red', 'no active NVIDIA discrete GPU was detected', 'GPU: ' + s.gpu, 'Without an NVIDIA GPU and driver, local generation falls back to CPU.')}`);
+        }
+        if (s.torch.cudaAvailable !== 'True') {
+          p2Parts.push(`${clue('red', 'your default Python has a CPU-only build of PyTorch', 'torch: ' + s.torch.version + ' / torch.cuda.is_available: ' + s.torch.cudaAvailable, 'Running scripts in the default Python environment will ignore your RTX GPU completely.')}`);
+        }
+        const p2 = p2Parts.length > 0
+          ? `Two things will trip you up right now when running local AI: ${p2Parts.join('; and ')}.`
+          : `Your VRAM, system RAM, and default PyTorch CUDA runtime are properly aligned with no obvious showstoppers.`;
+
+        let tierText = 'a solid everyday PC';
+        if (s.vramTotalMiB >= 15500) tierText = 'a heavy-duty local AI rig';
+        else if (s.vramTotalMiB >= 7500) tierText = 'a capable mid-high machine capped mainly by memory capacity';
+        else if (s.vramTotalMiB >= 4000) tierText = 'an entry-level discrete GPU machine for quantized models';
+
+        const p3 = `In plain terms, this is ${clue('infer', tierText, 'CPU: ' + s.cpu + ' + GPU: ' + s.gpu, 'Hardware tier judged by CPU core count and dedicated VRAM ceiling.')}. The ${clue('fact', s.cpuCores + '-core / ' + s.cpuThreads + '-thread ' + s.cpu, 'Processor: ' + s.cpu, 'Handles tokenization, data loading, and CPU-offloaded layers.')} paired with ${clue('fact', s.gpu + ' (' + vramGB + ' GB VRAM)', 'GPU: ' + s.gpu + ' / VRAM: ' + s.vramTotalMiB + ' MiB', 'Dedicated graphics memory.')} handles 7B/8B Q4 LLMs, SDXL image generation, and ${clue('infer', 'low-VRAM video workflows like Wan 2.2 5B or FramePack', 'Free VRAM: ~' + vramFreeGB + ' GB', 'With GGUF Q4 quantization and Tiled VAE decoding, 5B video models fit inside an 8 GB budget.')} well. Full unquantized 14B video models will stall without more RAM.`;
+
+        const p4 = s.vramUsedMiB > 1200
+          ? `Looking at its idle posture, ${clue('red', 'background apps have already eaten ' + vramUsedGB + ' GB of VRAM before you even start', 'VRAM Used: ' + s.vramUsedMiB + ' MiB / Free: ' + s.vramFreeMiB + ' MiB', 'Desktop compositing, browser hardware acceleration, or virtual displays consume nearly 2 GB of dedicated VRAM.')}, leaving you ${clue('fact', vramFreeGB + ' GB of net free VRAM', 'memory.free: ' + s.vramFreeMiB + ' MiB', 'Actual headroom left for model weights and activations.')}. Also, your GPU power limit is currently capped at ${clue('fact', s.gpuPowerCap, 'Power Draw/Cap: ' + s.gpuPowerDraw + ' / ' + s.gpuPowerCap, 'Laptop balanced mode lowers the GPU power ceiling.')}. Close background GPU hogs and switch to Performance mode before heavy runs.`
+          : `Your idle VRAM footprint is clean: background processes use only ${clue('fact', vramUsedGB + ' GB, leaving ' + vramFreeGB + ' GB free', 'Used: ' + s.vramUsedMiB + ' MiB / Free: ' + s.vramFreeMiB + ' MiB', 'Most of your dedicated VRAM is available for AI workloads.')}, with a current GPU power cap of ${clue('fact', s.gpuPowerCap, 'Power Cap: ' + s.gpuPowerCap, 'Reported by nvidia-smi.')}.`;
+
+        const envText = envList.length > 0
+          ? ` and set up ${clue('infer', envList.length + ' custom Conda environments (' + envList.slice(0, 8).join(', ') + (envList.length > 8 ? ', etc.' : '') + ')', 'Conda Envs: ' + envList.join(', '), 'Isolated environments reflect the specific AI and dev projects you work on.')}`
+          : '';
+        const p5 = `Your installed tools show you write code and tinker with local projects: ${clue('fact', installedTools.join(', '), 'CLI tools available in PATH', 'Detected directly in the current terminal PATH.')} are all wired up${envText}. As for your real name, age, or appearance, a local hardware script cannot see them and we do not guess.`;
+
+        const p6 = `This scan ran on ${clue('fact', s.timeInfo.enDay + ' ' + s.timeInfo.timePeriodEn + ' (' + s.timestamp + ')', 'Timestamp: ' + s.timestamp + ' / PS ' + s.psVersion, 'Local system clock and PowerShell engine version.')}, with the GPU sitting at ${clue('fact', s.gpuTemp + ' drawing ' + s.gpuPowerDraw, 'Temp: ' + s.gpuTemp + ' / Power: ' + s.gpuPowerDraw + ' / State: ' + s.gpuPerfState, 'Live sensor reading from nvidia-smi.')} in a quiet, light-load state.`;
+
+        const p7 = `As a local hardware fingerprint, three traits stand out most: ${clue('fact', s.cpu + ' paired with ' + s.gpu, 'Core Compute', 'Primary CPU + GPU combination.')}, ${clue('fact', biggestDisk.FreeGB + ' GB of open storage on drive ' + biggestDisk.Drive, 'Storage Headroom', 'Best partition for model weights.')}, and ${s.ramGB <= 16.5 ? clue('red', 'the ' + s.ramModules + ' RAM setup that will benefit hugely from a 32 GB or 64 GB upgrade', 'RAM: ' + s.ramModules, 'Upgrading SODIMM RAM is the highest-ROI hardware change for this laptop.') : clue('fact', 'your ' + s.ramModules + ' system memory configuration', 'RAM: ' + s.ramModules, 'System memory configuration.')}.`;
+
+        return [p1, p2, p3, p4, p5, p6, p7];
+      }
+
+      // Simplified Chinese (zh)
       const p1 = `你现在用的是 ${clue('fact', s.os, 'OS: ' + s.os + ' (Build ' + s.osBuild + ')', '从系统底层读取到的 Windows 版本号。')}，面前这台机器是 ${clue('fact', s.brand + ' ' + s.model, 'Model: ' + s.brand + ' ' + s.model + ' / 主板 ' + s.board, '直接读取主板与整机型号得出的硬件身份。')}。系统里挂着 ${disks.length} 个本地分区，其中 ${clue('infer', biggestDisk.Drive + ' 盘空着 ' + biggestDisk.FreeGB + 'GB 没动', biggestDisk.Drive + ' 总计 ' + biggestDisk.TotalGB + 'GB / 空闲 ' + biggestDisk.FreeGB + 'GB', '哪个盘剩余空间最大，大模型权重和素材库就最该往哪儿放。')}，拿来囤几十个 G 的本地模型权重正合适。`;
 
-      // P2: 破绽提醒
       const p2Parts = [];
       if (s.vramTotalMiB > 0 && s.vramTotalMiB <= 8500 && s.ramGB <= 16.5) {
         p2Parts.push(`一个是 ${clue('red', vramGB + 'GB 显存配 ' + Math.round(s.ramGB) + 'GB 内存的组合有点卡脖子', 'VRAM: ' + s.vramTotalMiB + ' MiB / RAM: ' + s.ramGB + ' GB (' + s.ramModules + ')', '显存装不下的模型得借用系统内存，16GB 内存扣掉系统自用只剩七八个 G，跑大视频模型很容易吃满卡死。')}，跑小模型挺顺，一碰要借内存的大块头就会狂刷硬盘虚拟内存`);
@@ -839,7 +942,6 @@ $htmlTemplate = @'
         ? `真要跑起本地 AI，这台电脑目前有两处容易掉链子的地方：${p2Parts.join('；')}。`
         : `从底层配置看，你的显存、内存和默认 PyTorch CUDA 环境都已经对齐，没有那种一跑脚本就报错的低级暗坑。`;
 
-      // P3: 硬件档位口语定性
       let tierText = '中规中矩的家用办公机';
       if (s.vramTotalMiB >= 15500) tierText = '能直接硬啃大模型的重型算力机';
       else if (s.vramTotalMiB >= 7500) tierText = '算力底子不错、但被显存和内存容量框住上限的甜点机';
@@ -847,212 +949,359 @@ $htmlTemplate = @'
 
       const p3 = `按跑 AI 的标准来给硬件定个档，它属于 ${clue('infer', tierText, 'CPU: ' + s.cpu + ' + GPU: ' + s.gpu, '综合处理器核心数与独立显存大小给出的档位定性。')}。${clue('fact', s.cpuCores + ' 核 ' + s.cpuThreads + ' 线程的 ' + s.cpu, 'Processor: ' + s.cpu, '多核处理器负责数据加载、分词和前后处理。')} 搭上 ${clue('fact', s.gpu + '（' + vramGB + 'GB 独立显存）', 'GPU: ' + s.gpu + ' / VRAM: ' + s.vramTotalMiB + ' MiB', '决定你能装下多大模型的硬指标。')}，日常跑 7B/8B 聊天模型、SDXL 画图，或者 ${clue('infer', 'Wan 2.2 5B、FramePack 这类专门做过低显存优化的视频模型', '可用净显存约 ' + vramFreeGB + 'GB', '8GB 显存配合 GGUF Q4 量化和分块 VAE 解码，跑 5B 级视频模型刚刚好。')} 都兜得住；但别强行上未量化的原版大模型。`;
 
-      // P4: 运行姿态点评
       const p4 = s.vramUsedMiB > 1200
         ? `再看它现在的待机姿态，${clue('red', '还没开跑就已经被后台偷走了 ' + vramUsedGB + 'GB 显存', 'VRAM Used: ' + s.vramUsedMiB + ' MiB / Free: ' + s.vramFreeMiB + ' MiB', '桌面窗口、浏览器硬件加速或模拟器占掉了近 2GB 显存，跑视频到最后一步解码时极易因为差这点显存而崩掉。')}，满打满算只留给你 ${clue('fact', vramFreeGB + 'GB 的净显存', 'memory.free: ' + s.vramFreeMiB + ' MiB', '当前真正能给 AI 模型分配的剩余独立显存。')}。而且显卡功耗上限目前停在 ${clue('fact', s.gpuPowerCap, 'Power Draw/Cap: ' + s.gpuPowerDraw + ' / ' + s.gpuPowerCap, '笔记本在平衡或安静模式下会限制显卡最高功耗。')}，跑重活前记得插紧电源、切到性能模式，并把占显存的后台软件关掉。`
         : `目前机器的待机姿态挺干净，后台只占了 ${clue('fact', vramUsedGB + 'GB 显存，留出 ' + vramFreeGB + 'GB 净空间', 'Used: ' + s.vramUsedMiB + ' MiB / Free: ' + s.vramFreeMiB + ' MiB', '后台显存占用控制得很好，大部分显存都能留给模型。')}，显卡当前功耗上限为 ${clue('fact', s.gpuPowerCap, 'Power Cap: ' + s.gpuPowerCap, '当前驱动汇报的功耗上限。')}。`;
 
-      // P5: 偏好与开发工具链推论 + 克制声明
-      const installedTools = Object.entries(s.tools).filter(([_, v]) => v && !v.includes('未')).map(([k]) => k);
-      const envList = s.condaEnvs || [];
       const envText = envList.length > 0
         ? `，还在 Conda 里建了 ${clue('infer', envList.length + ' 个独立环境（' + envList.slice(0, 8).join('、') + (envList.length > 8 ? ' 等' : '') + '）', 'Conda Envs: ' + envList.join(', '), '每个虚拟环境对应一个折腾过的项目，从名字就能看出平时在跑哪些业务。')}`
         : '';
       const p5 = `翻一下装好的工具链就知道你平时没少折腾代码：机子里能直接调起 ${clue('fact', installedTools.join('、'), 'Detected CLI Tools in PATH', '这些开发工具全部在终端 PATH 中可直接调用。')}${envText}。至于你的真实姓名、年龄和长相，本地硬件脚本读不出来，这里也不瞎猜。`;
 
-      // P6: 当前访问时段与温度状态
-      const p6 = `这次扫描发生在 ${clue('fact', s.timeInfo.cnDay + s.timeInfo.timePeriod + '（' + s.timestamp + '）', 'Timestamp: ' + s.timestamp, '本次运行检测脚本的本地时间。')}，显卡核心温度 ${clue('fact', s.gpuTemp + '，当前功耗 ' + s.gpuPowerDraw, 'Temp: ' + s.gpuTemp + ' / Power: ' + s.gpuPowerDraw + ' / State: ' + s.gpuPerfState, 'nvidia-smi 实时读取到的显卡传感器状态。')}，风扇还没怎么转，正处于随时能拉起来干活的轻载状态。`;
+      const p6 = `这次扫描发生在 ${clue('fact', s.timeInfo.cnDay + s.timeInfo.timePeriod + '（' + s.timestamp + '）', 'Timestamp: ' + s.timestamp + ' / PS ' + s.psVersion, '本次运行检测脚本的本地时间与终端引擎版本。')}，显卡核心温度 ${clue('fact', s.gpuTemp + '，当前功耗 ' + s.gpuPowerDraw, 'Temp: ' + s.gpuTemp + ' / Power: ' + s.gpuPowerDraw + ' / State: ' + s.gpuPerfState, 'nvidia-smi 实时读取到的显卡传感器状态。')}，风扇还没怎么转，正处于随时能拉起来干活的轻载状态。`;
 
-      // P7: 指纹辨识度与最显眼维度
       const p7 = `综合算下来，这台电脑的本地特征辨识度很高。最显眼的地方有三处：${clue('fact', s.cpu + ' 搭 ' + s.gpu + ' 的硬件底子', 'CPU + GPU Combo', '核心算力组合。')}、${clue('fact', biggestDisk.Drive + ' 盘那 ' + biggestDisk.FreeGB + 'GB 的空闲空间', 'Max Free Disk: ' + biggestDisk.Drive, '模型存储主力分区。')}，以及 ${s.ramGB <= 16.5 ? clue('red', '目前最值得花点小钱升到 32GB 以上的 ' + s.ramModules + ' 内存', 'RAM: ' + s.ramModules, '把 16GB 内存升到 32GB 或 64GB，是这台笔记本提升大模型兼容性性价比最高的一步。') : clue('fact', s.ramModules + ' 的充裕内存配置', 'RAM: ' + s.ramModules, '内存容量充足，支持模型分块卸载。')}。`;
 
       return [p1, p2, p3, p4, p5, p6, p7];
     }
 
-    function buildDiagnosis(s) {
+    function buildDiagnosis(s, lang) {
       const issues = [];
       const goods = [];
       const topFixes = [];
+      const en = (lang === 'en');
 
       if (s.torch.cudaAvailable !== 'True') {
-        issues.push({ level: 'red', title: '默认 Python 的 PyTorch 调不到显卡', note: '当前全局环境装的是 CPU 版 PyTorch（或没装），直接跑脚本会让显卡闲置、CPU 硬扛。' });
+        issues.push({
+          level: 'red',
+          title: en ? 'Default Python PyTorch cannot use the GPU (CPU-only)' : '默认 Python 的 PyTorch 调不到显卡',
+          note: en ? 'Running scripts in the default Python environment leaves your RTX GPU idle while the CPU does all the work.' : '当前全局环境装的是 CPU 版 PyTorch（或没装），直接跑脚本会让显卡闲置、CPU 硬扛。'
+        });
         topFixes.push({
-          head: '给默认 Python 换上带 CUDA 的 PyTorch',
-          desc: '你的驱动最高支持到 CUDA ' + s.cudaMax + '，重装带 cu126 的 PyTorch 就能直接调起显卡：',
+          head: en ? 'Install CUDA-enabled PyTorch in default Python' : '给默认 Python 换上带 CUDA 的 PyTorch',
+          desc: en ? ('Your driver supports up to CUDA ' + s.cudaMax + '. Reinstall PyTorch with cu126:') : ('你的驱动最高支持到 CUDA ' + s.cudaMax + '，重装带 cu126 的 PyTorch 就能直接调起显卡：'),
           cmd: 'pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 --force-reinstall'
         });
       } else {
-        goods.push({ level: 'green', title: '默认 PyTorch 已打通显卡 CUDA', note: '全局 Python 可直接调用 ' + s.gpu + ' 加速。' });
+        goods.push({
+          level: 'green',
+          title: en ? 'Default PyTorch CUDA is active' : '默认 PyTorch 已打通显卡 CUDA',
+          note: en ? ('Global Python can directly accelerate workloads on ' + s.gpu + '.') : ('全局 Python 可直接调用 ' + s.gpu + ' 加速。')
+        });
       }
 
       if (s.ramGB <= 16.5 && s.vramTotalMiB <= 8500) {
-        issues.push({ level: 'red', title: '16GB 内存兜不住大模型的内存卸载', note: '8GB 显存跑生图或视频模型经常要借用系统内存，16GB 物理内存扣掉系统自用只剩七八个 G，借多了就会狂读硬盘卡死。' });
+        issues.push({
+          level: 'red',
+          title: en ? '16 GB system RAM bottlenecks model CPU offloading' : '16GB 内存兜不住大模型的内存卸载',
+          note: en ? '8 GB VRAM relies on system RAM for large diffusion/video models. 16 GB RAM leaves only ~7 GB free before heavy disk swapping.' : '8GB 显存跑生图或视频模型经常要借用系统内存，16GB 物理内存扣掉系统自用只剩七八个 G，借多了就会狂读硬盘卡死。'
+        });
         topFixes.push({
-          head: '把内存条从 16GB 升到 32GB 或 64GB',
-          desc: '笔记本显存焊死改不了，但换两根 16G/32G 内存条就能打通 FLUX 和 14B 视频模型的 CPU 卸载通道。',
+          head: en ? 'Upgrade system RAM from 16 GB to 32 GB or 64 GB' : '把内存条从 16GB 升到 32GB 或 64GB',
+          desc: en ? 'Laptop VRAM is soldered, but upgrading SODIMM RAM unlocks smooth CPU block-swapping for FLUX and 14B video models.' : '笔记本显存焊死改不了，但换两根 16G/32G 内存条就能打通 FLUX 和 14B 视频模型的 CPU 卸载通道。',
           cmd: ''
         });
       } else {
-        goods.push({ level: 'green', title: '系统内存容量充裕 (' + s.ramGB + 'GB)', note: '足够支撑大模型权重的 CPU 内存卸载（Block Swap）。' });
+        goods.push({
+          level: 'green',
+          title: en ? ('System RAM is generous (' + s.ramGB + ' GB)') : ('系统内存容量充裕 (' + s.ramGB + 'GB)'),
+          note: en ? 'Enough headroom for CPU block-swap offloading.' : '足够支撑大模型权重的 CPU 内存卸载（Block Swap）。'
+        });
       }
 
       if (s.vramUsedMiB > 1400) {
-        issues.push({ level: 'amber', title: '桌面后台吃掉了 ' + (s.vramUsedMiB / 1024).toFixed(2) + 'GB 独立显存', note: '总共 ' + s.vramTotalMiB + ' MiB 显存现在只剩 ' + s.vramFreeMiB + ' MiB，跑视频到最后一步 VAE 解码时最容易差这一口气。' });
+        issues.push({
+          level: 'amber',
+          title: en ? ('Background apps are using ' + (s.vramUsedMiB / 1024).toFixed(2) + ' GB of VRAM') : ('桌面后台吃掉了 ' + (s.vramUsedMiB / 1024).toFixed(2) + 'GB 独立显存'),
+          note: en ? ('Out of ' + s.vramTotalMiB + ' MiB total VRAM, only ' + s.vramFreeMiB + ' MiB is free. Video VAE decoding often OOMs because of this.') : ('总共 ' + s.vramTotalMiB + ' MiB 显存现在只剩 ' + s.vramFreeMiB + ' MiB，跑视频到最后一步 VAE 解码时最容易差这一口气。')
+        });
         topFixes.push({
-          head: '跑大模型前清掉后台显存大户并切到高性能模式',
-          desc: '关掉安卓模拟器、多余浏览器网页的硬件加速，并在电脑控制中心切到狂暴/高性能模式解锁功耗墙。',
+          head: en ? 'Free up background VRAM & unlock GPU power limit' : '跑大模型前清掉后台显存大户并切到高性能模式',
+          desc: en ? 'Close Android emulators and browser hardware acceleration, and switch your laptop control center to Performance mode.' : '关掉安卓模拟器、多余浏览器网页的硬件加速，并在电脑控制中心切到狂暴/高性能模式解锁功耗墙。',
           cmd: ''
         });
       }
 
       const capNum = parseInt(String(s.gpuPowerCap).replace(/[^\d]/g, ''), 10);
       if (capNum > 0 && capNum <= 85) {
-        issues.push({ level: 'amber', title: '显卡功耗上限目前锁在 ' + s.gpuPowerCap, note: '处于偏保守的功耗档位，长时间跑视频生成建议插电并在自带控制中心切到性能/狂暴模式。' });
+        issues.push({
+          level: 'amber',
+          title: en ? ('GPU power cap is currently limited to ' + s.gpuPowerCap) : ('显卡功耗上限目前锁在 ' + s.gpuPowerCap),
+          note: en ? 'Plug in AC power and switch to Performance/Unleashed mode for sustained video generation.' : '处于偏保守的功耗档位，长时间跑视频生成建议插电并在自带控制中心切到性能/狂暴模式。'
+        });
       }
 
-      if (String(s.tools.nvcc).includes('未安装')) {
-        issues.push({ level: 'amber', title: '没装系统级 nvcc 编译器（日常使用不用管）', note: '驱动已支持 CUDA ' + s.cudaMax + '，平时跑现成模型完全够用；只有自己从源码编译 FlashAttention 算子时才需要装 CUDA Toolkit。' });
+      if (String(s.tools.nvcc).includes('Not')) {
+        issues.push({
+          level: 'amber',
+          title: en ? 'No system-wide nvcc compiler (fine for normal inference)' : '没装系统级 nvcc 编译器（日常使用不用管）',
+          note: en ? ('Your driver supports CUDA ' + s.cudaMax + '. You only need CUDA Toolkit if compiling custom kernels like FlashAttention from source.') : ('驱动已支持 CUDA ' + s.cudaMax + '，平时跑现成模型完全够用；只有自己从源码编译 FlashAttention 算子时才需要装 CUDA Toolkit。')
+        });
       }
 
-      if (!String(s.tools.conda).includes('未') && !String(s.tools.code).includes('未')) {
-        goods.push({ level: 'green', title: '终端 PATH 与开发工具链已就绪', note: s.tools.conda + '、VS Code (' + s.tools.code + ')、Git 等均可在终端直接调用。' });
+      if (!String(s.tools.conda).includes('Not') && !String(s.tools.code).includes('Not')) {
+        goods.push({
+          level: 'green',
+          title: en ? 'Terminal PATH & dev toolchain are ready' : '终端 PATH 与开发工具链已就绪',
+          note: en ? (s.tools.conda + ', VS Code (' + s.tools.code + '), and Git are all accessible globally.') : (s.tools.conda + '、VS Code (' + s.tools.code + ')、Git 等均可在终端直接调用。')
+        });
       }
 
       const disks = s.disks || [];
       let biggestDisk = disks[0] || { Drive: 'C:', FreeGB: 0 };
       disks.forEach(d => { if (d.FreeGB > biggestDisk.FreeGB) biggestDisk = d; });
       if (biggestDisk.FreeGB >= 150) {
-        goods.push({ level: 'green', title: biggestDisk.Drive + ' 盘还有 ' + biggestDisk.FreeGB + 'GB 空闲空间', note: '足够放下多套生图与视频生成大模型。' });
+        goods.push({
+          level: 'green',
+          title: en ? ('Drive ' + biggestDisk.Drive + ' has ' + biggestDisk.FreeGB + ' GB free') : (biggestDisk.Drive + ' 盘还有 ' + biggestDisk.FreeGB + 'GB 空闲空间'),
+          note: en ? 'Plenty of room for local checkpoints and video models.' : '足够放下多套生图与视频生成大模型。'
+        });
       }
 
       return { issues, goods, topFixes };
     }
 
-    // Render Page
-    document.getElementById('metaTimestamp').textContent = '采样时间：' + SNAPSHOT.timestamp;
-    document.getElementById('fpHashText').textContent = SNAPSHOT.fingerprintId;
-    document.getElementById('fpSubText').textContent = `实测核心：${SNAPSHOT.cpu} · ${SNAPSHOT.gpu} (${Math.round(SNAPSHOT.vramTotalMiB/1024)}GB) · 内存 ${Math.round(SNAPSHOT.ramGB)}GB`;
+    function bindClueEvents() {
+      const popover = document.getElementById('cluePopover');
+      const popType = document.getElementById('popType');
+      const popField = document.getElementById('popField');
+      const popReason = document.getElementById('popReason');
 
-    const paragraphs = buildPortrait(SNAPSHOT);
-    const narrativeContainer = document.getElementById('narrativeContainer');
-    paragraphs.forEach((html, idx) => {
-      const p = document.createElement('p');
-      p.className = 'narrative-p';
-      const num = String(idx + 1).padStart(2, '0');
-      p.innerHTML = `<span class="p-index">${num}</span>${html}`;
-      narrativeContainer.appendChild(p);
-    });
+      const TYPE_MAP = currentLang === 'en' ? {
+        red: { text: '🔴 Bottleneck / Exposure', cls: 'pop-type type-red' },
+        fact: { text: '⚪ Measured Hardware Fact', cls: 'pop-type type-fact' },
+        infer: { text: '🟢 Usage Deduction', cls: 'pop-type type-infer' }
+      } : {
+        red: { text: '🔴 会卡住你的短板', cls: 'pop-type type-red' },
+        fact: { text: '⚪ 机子实测数据', cls: 'pop-type type-fact' },
+        infer: { text: '🟢 使用习惯侧写依据', cls: 'pop-type type-infer' }
+      };
 
-    // Diff against previous snapshot
-    const diffList = document.getElementById('diffList');
-    const diffBadge = document.getElementById('diffBadge');
-    if (PREV_SNAPSHOT && PREV_SNAPSHOT.timestamp) {
-      const diffs = [];
-      const vramDiff = SNAPSHOT.vramFreeMiB - (PREV_SNAPSHOT.vramFreeMiB || 0);
-      if (Math.abs(vramDiff) >= 30) {
-        diffs.push(`可用显存 ${vramDiff > 0 ? '增加了 ' + vramDiff : '减少了 ' + Math.abs(vramDiff)} MiB（当前 ${SNAPSHOT.vramFreeMiB} MiB）`);
+      function showPopover(target) {
+        const t = target.getAttribute('data-type') || 'fact';
+        const cfg = TYPE_MAP[t] || TYPE_MAP.fact;
+        popType.className = cfg.cls;
+        const pinHint = currentLang === 'en' ? (pinnedClue === target ? 'Pinned' : 'Click to pin') : (pinnedClue === target ? '已固定' : '点按可固定');
+        popType.innerHTML = `<span>${cfg.text}</span><span style="font-weight:400;opacity:0.7;">${pinHint}</span>`;
+        popField.textContent = target.getAttribute('data-field') || '';
+        popReason.textContent = target.getAttribute('data-reason') || '';
+        popover.classList.add('visible');
+
+        const rect = target.getBoundingClientRect();
+        const popWidth = 340;
+        let left = Math.max(12, Math.min(rect.left + rect.width / 2 - popWidth / 2, window.innerWidth - popWidth - 12));
+        let top = rect.bottom + 10;
+        const popHeight = popover.offsetHeight || 120;
+        if (top + popHeight > window.innerHeight - 12) top = rect.top - popHeight - 10;
+        popover.style.left = left + 'px';
+        popover.style.top = Math.max(12, top) + 'px';
       }
-      if (SNAPSHOT.tools.conda !== PREV_SNAPSHOT.tools?.conda) {
-        diffs.push(`Conda 状态更新为：${SNAPSHOT.tools.conda}`);
-      }
-      if (SNAPSHOT.tools.code !== PREV_SNAPSHOT.tools?.code) {
-        diffs.push(`VS Code CLI 状态更新为：${SNAPSHOT.tools.code}`);
-      }
-      if (SNAPSHOT.torch.cudaAvailable !== PREV_SNAPSHOT.torch?.cudaAvailable) {
-        diffs.push(`全局 PyTorch CUDA 可用性变为：${SNAPSHOT.torch.cudaAvailable}`);
-      }
-      if (diffs.length === 0) {
-        diffs.push(`核心硬件与工具链状态与上次（${PREV_SNAPSHOT.timestamp.split(' ')[1]}）一致`);
-        diffBadge.textContent = '状态稳定';
-      } else {
-        diffBadge.textContent = `${diffs.length} 处变化`;
-      }
-      diffs.forEach(d => {
-        const li = document.createElement('li');
-        li.innerHTML = `<span class="diff-plus">~</span><span>${d}</span>`;
-        diffList.appendChild(li);
+
+      document.querySelectorAll('.clue').forEach(el => {
+        el.addEventListener('mouseenter', () => { if (!pinnedClue) showPopover(el); });
+        el.addEventListener('mouseleave', () => { if (!pinnedClue) popover.classList.remove('visible'); });
+        el.addEventListener('click', e => {
+          e.stopPropagation();
+          if (pinnedClue === el) {
+            el.classList.remove('active');
+            pinnedClue = null;
+            popover.classList.remove('visible');
+          } else {
+            if (pinnedClue) pinnedClue.classList.remove('active');
+            pinnedClue = el;
+            el.classList.add('active');
+            showPopover(el);
+          }
+        });
       });
-    } else {
-      diffBadge.textContent = '基准已建立';
-      const li = document.createElement('li');
-      li.innerHTML = `<span class="diff-plus">+</span><span>已保存本次扫描快照，下次双击运行会自动对比变化</span>`;
-      diffList.appendChild(li);
     }
 
-    // Diagnosis rendering
-    const diag = buildDiagnosis(SNAPSHOT);
-    const redCount = diag.issues.filter(i => i.level === 'red').length;
-    const amberCount = diag.issues.filter(i => i.level === 'amber').length;
-    const greenCount = diag.goods.length;
+    function renderAll() {
+      const en = (currentLang === 'en');
+      document.documentElement.lang = en ? 'en' : 'zh-CN';
+      document.getElementById('btnLangZh').classList.toggle('active', !en);
+      document.getElementById('btnLangEn').classList.toggle('active', en);
 
-    document.getElementById('diagBigNum').textContent = diag.issues.length;
-    document.getElementById('gradeBadge').textContent = redCount === 0 ? 'A 满血就绪级' : redCount <= 2 ? 'B+ 甜点受限级' : 'C 亟待排障级';
+      document.getElementById('uiBrandBadge').textContent = en ? 'XunyiJu · AI PC Capability Audit' : '寻祎居 · 算力底牌侧写';
+      document.getElementById('uiBrandTitle').textContent = en ? 'Who Are You · Your PC in the Eyes of AI' : '你是谁 · AI 眼里的这台电脑';
+      document.getElementById('uiBrandSub').textContent = en ? ('Offline Read-Only Audit · PS ' + SNAPSHOT.psVersion) : ('零联网本地只读扫描 · PS ' + SNAPSHOT.psVersion);
 
-    const segBar = document.getElementById('segmentBar');
-    segBar.innerHTML = `
-      <div class="seg-red" style="flex:${Math.max(1, redCount)}"></div>
-      <div class="seg-amber" style="flex:${Math.max(1, amberCount)}"></div>
-      <div class="seg-green" style="flex:${Math.max(2, greenCount)}"></div>
-    `;
-    document.getElementById('segmentLabels').innerHTML = `
-      <span>🔴 ${redCount} 处立刻卡脖子</span>
-      <span>🟡 ${amberCount} 处跑大模型受限</span>
-      <span>🟢 ${greenCount} 项健康就绪</span>
-    `;
-
-    const priorityList = document.getElementById('priorityList');
-    document.getElementById('priorityTag').textContent = `TOP ${diag.topFixes.length}`;
-    diag.topFixes.forEach((f, i) => {
-      const li = document.createElement('li');
-      li.className = 'priority-item';
-      const cmdHtml = f.cmd ? '<div class="priority-cmd">' + f.cmd + '</div>' : '';
-      li.innerHTML = '<div class="priority-item-head">' + (i + 1) + '. ' + f.head + '</div><div class="priority-item-desc">' + f.desc + '</div>' + cmdHtml;
-      priorityList.appendChild(li);
-    });
-
-    const checklistContainer = document.getElementById('checklistContainer');
-    [...diag.issues, ...diag.goods].forEach(item => {
-      const li = document.createElement('li');
-      li.className = 'check-item';
-      const dotCls = item.level === 'red' ? 'dot-red' : item.level === 'amber' ? 'dot-amber' : 'dot-green';
-      li.innerHTML = `
-        <span class="check-dot ${dotCls}"></span>
-        <div class="check-content">
-          <div class="check-title">${item.title}</div>
-          <div class="check-note">${item.note}</div>
-        </div>
+      document.getElementById('uiLegendBar').innerHTML = en ? `
+        <span class="legend-item"><span class="legend-red-dot"></span>Red: Bottleneck</span>
+        <span class="legend-item"><span class="legend-white-fact"></span>White: Measured Fact</span>
+        <span class="legend-item"><span class="legend-green-dash"></span>Green: Deduction (Hover/Click)</span>
+      ` : `
+        <span class="legend-item"><span class="legend-red-dot"></span>红点：会卡住你的短板</span>
+        <span class="legend-item"><span class="legend-white-fact"></span>白字：机子实测数据</span>
+        <span class="legend-item"><span class="legend-green-dash"></span>绿虚线：使用习惯侧写（悬停或点按看依据）</span>
       `;
-      checklistContainer.appendChild(li);
-    });
 
-    // Technical Appendix
-    const appendixItems = [
-      { k: "电脑品牌与型号", v: `${SNAPSHOT.brand} ${SNAPSHOT.model}`, status: "" },
-      { k: "主板与 BIOS", v: `${SNAPSHOT.board} / BIOS ${SNAPSHOT.bios}`, status: "" },
-      { k: "操作系统", v: `${SNAPSHOT.os} (Build ${SNAPSHOT.osBuild})`, status: "" },
-      { k: "处理器 (CPU)", v: `${SNAPSHOT.cpu} (${SNAPSHOT.cpuCores}C/${SNAPSHOT.cpuThreads}T)`, status: "ok" },
-      { k: "物理内存总量", v: `${SNAPSHOT.ramGB} GB (${SNAPSHOT.ramModules})`, status: SNAPSHOT.ramGB <= 16.5 ? "warn" : "ok" },
-      { k: "独立显卡 (GPU)", v: SNAPSHOT.gpu, status: "ok" },
-      { k: "专用显存 (VRAM)", v: `总计 ${SNAPSHOT.vramTotalMiB} MiB / 已用 ${SNAPSHOT.vramUsedMiB} MiB / 空闲 ${SNAPSHOT.vramFreeMiB} MiB`, status: SNAPSHOT.vramFreeMiB < 6500 ? "warn" : "ok" },
-      { k: "NVIDIA 驱动与最高 CUDA", v: `Driver ${SNAPSHOT.nvDriver} / CUDA ${SNAPSHOT.cudaMax}`, status: "ok" },
-      { k: "显卡功耗与温度", v: `${SNAPSHOT.gpuPowerDraw} / ${SNAPSHOT.gpuPowerCap} | ${SNAPSHOT.gpuTemp} (${SNAPSHOT.gpuPerfState})`, status: "" },
-      ...SNAPSHOT.disks.map(d => ({ k: `磁盘 ${d.Drive} 容量`, v: `总计 ${d.TotalGB} GB / 空闲 ${d.FreeGB} GB`, status: d.FreeGB > 200 ? "ok" : d.FreeGB < 50 ? "warn" : "" })),
-      { k: "全局 Python", v: SNAPSHOT.tools.python, status: "ok" },
-      { k: "全局 PyTorch 版本", v: `${SNAPSHOT.torch.version} (CUDA Runtime: ${SNAPSHOT.torch.cudaRuntime})`, status: SNAPSHOT.torch.cudaAvailable === 'True' ? "ok" : "warn" },
-      { k: "全局 torch.cuda.is_available", v: SNAPSHOT.torch.cudaAvailable, status: SNAPSHOT.torch.cudaAvailable === 'True' ? "ok" : "warn" },
-      { k: "Conda 状态与环境数", v: `${SNAPSHOT.tools.conda} (${SNAPSHOT.condaEnvs.length} 个自定义环境)`, status: "ok" },
-      { k: "Conda 环境列表", v: SNAPSHOT.condaEnvs.join(', ') || '无', status: "" },
-      { k: "uv / Git", v: `${SNAPSHOT.tools.uv} / ${SNAPSHOT.tools.git}`, status: "ok" },
-      { k: "Node.js / pnpm", v: `${SNAPSHOT.tools.node} / pnpm ${SNAPSHOT.tools.pnpm}`, status: "ok" },
-      { k: "VS Code CLI (code)", v: SNAPSHOT.tools.code, status: "ok" },
-      { k: "Rust / .NET / Docker", v: `${SNAPSHOT.tools.rust} | .NET ${SNAPSHOT.tools.dotnet} | ${SNAPSHOT.tools.docker}`, status: "" },
-      { k: "FFmpeg / nvcc", v: `FFmpeg: ${SNAPSHOT.tools.ffmpeg} | nvcc: ${SNAPSHOT.tools.nvcc}`, status: "" }
-    ];
+      document.getElementById('uiLeftTitle').textContent = en ? '“Your PC in the Eyes of AI Models”' : '「AI 模型眼里的你」';
+      document.getElementById('metaTimestamp').textContent = (en ? 'Sampled: ' : '采样时间：') + SNAPSHOT.timestamp;
+      document.getElementById('uiFpLabel').textContent = en ? 'Hardware Fingerprint ID' : '本机特征指纹 ID';
+      document.getElementById('uiFpTag').textContent = en ? 'Local Hash' : '本地生成';
+      document.getElementById('fpHashText').textContent = SNAPSHOT.fingerprintId;
+      document.getElementById('fpSubText').textContent = en
+        ? `Core: ${SNAPSHOT.cpu} · ${SNAPSHOT.gpu} (${Math.round(SNAPSHOT.vramTotalMiB/1024)}GB) · RAM ${Math.round(SNAPSHOT.ramGB)}GB`
+        : `实测核心：${SNAPSHOT.cpu} · ${SNAPSHOT.gpu} (${Math.round(SNAPSHOT.vramTotalMiB/1024)}GB) · 内存 ${Math.round(SNAPSHOT.ramGB)}GB`;
 
-    document.getElementById('appendixTitle').textContent = `全部探测项和读到的值（底层技术附录 · 共 ${appendixItems.length} 项）`;
-    const appendixGrid = document.getElementById('appendixGrid');
-    function renderAppendix(q = '') {
-      const kw = q.trim().toLowerCase();
+      document.getElementById('uiDiffTitle').textContent = en ? 'Changes Since Last Scan' : '跟上回扫描比有什么变化';
+
+      document.getElementById('btnCopyPortrait').textContent = en ? '📋 Copy Narrative' : '📋 复制这段侧写';
+      document.getElementById('btnCopyJson').textContent = en ? '🧬 Export JSON' : '🧬 导出 JSON 快照';
+      document.getElementById('btnToggleClues').textContent = expanded
+        ? (en ? '🔼 Hide All Evidence' : '🔼 收起所有判断依据')
+        : (en ? '💡 Expand All Evidence' : '💡 展开所有判断依据');
+      document.getElementById('btnViewRaw').textContent = en ? '📄 View Raw Report.txt' : '📄 看原始 Report.txt';
+      document.getElementById('btnCopyCmd').textContent = en ? '⚡ Copy Re-run Command' : '⚡ 复制重测命令';
+
+      document.getElementById('uiRightTitle').textContent = en ? '“Bottleneck Diagnosis”' : '「破绽与卡点诊断」';
+      document.getElementById('uiDiagCountText').textContent = en ? 'bottlenecks may slow you down' : '处地方可能卡住你';
+      document.getElementById('uiPriorityTitle').textContent = en ? '🔥 Fix These First' : '🔥 先改这几项';
+      document.getElementById('uiChecklistHeader').textContent = en ? 'Plain-Language Checklist' : '逐项大白话清单';
+      document.getElementById('appendixSearch').placeholder = en ? 'Filter fields or values (e.g. cuda, vram, ram)...' : '搜字段或值 (比如 cuda, 显存, 内存)...';
+
+      // Narrative
+      const paragraphs = buildPortrait(SNAPSHOT, currentLang);
+      const narrativeContainer = document.getElementById('narrativeContainer');
+      narrativeContainer.innerHTML = '';
+      paragraphs.forEach((html, idx) => {
+        const p = document.createElement('p');
+        p.className = 'narrative-p';
+        const num = String(idx + 1).padStart(2, '0');
+        p.innerHTML = `<span class="p-index">${num}</span>${html}`;
+        narrativeContainer.appendChild(p);
+      });
+      bindClueEvents();
+
+      // Diff
+      const diffList = document.getElementById('diffList');
+      const diffBadge = document.getElementById('diffBadge');
+      diffList.innerHTML = '';
+      if (PREV_SNAPSHOT && PREV_SNAPSHOT.timestamp) {
+        const diffs = [];
+        const vramDiff = SNAPSHOT.vramFreeMiB - (PREV_SNAPSHOT.vramFreeMiB || 0);
+        if (Math.abs(vramDiff) >= 30) {
+          diffs.push(en
+            ? `Free VRAM ${vramDiff > 0 ? 'increased by ' + vramDiff : 'decreased by ' + Math.abs(vramDiff)} MiB (now ${SNAPSHOT.vramFreeMiB} MiB)`
+            : `可用显存 ${vramDiff > 0 ? '增加了 ' + vramDiff : '减少了 ' + Math.abs(vramDiff)} MiB（当前 ${SNAPSHOT.vramFreeMiB} MiB）`);
+        }
+        if (SNAPSHOT.psVersion !== PREV_SNAPSHOT.psVersion && PREV_SNAPSHOT.psVersion) {
+          diffs.push(en
+            ? `PowerShell engine updated: ${PREV_SNAPSHOT.psVersion} → ${SNAPSHOT.psVersion}`
+            : `PowerShell 终端引擎已升级：${PREV_SNAPSHOT.psVersion} → ${SNAPSHOT.psVersion}`);
+        }
+        if (SNAPSHOT.torch.cudaAvailable !== PREV_SNAPSHOT.torch?.cudaAvailable) {
+          diffs.push(en
+            ? `Global PyTorch CUDA status changed to: ${SNAPSHOT.torch.cudaAvailable}`
+            : `全局 PyTorch CUDA 可用性变为：${SNAPSHOT.torch.cudaAvailable}`);
+        }
+        if (diffs.length === 0) {
+          diffs.push(en
+            ? `Core hardware & toolchain match previous scan (${PREV_SNAPSHOT.timestamp.split(' ')[1]})`
+            : `核心硬件与工具链状态与上次（${PREV_SNAPSHOT.timestamp.split(' ')[1]}）一致`);
+          diffBadge.textContent = en ? 'Stable' : '状态稳定';
+        } else {
+          diffBadge.textContent = en ? `${diffs.length} change(s)` : `${diffs.length} 处变化`;
+        }
+        diffs.forEach(d => {
+          const li = document.createElement('li');
+          li.innerHTML = `<span class="diff-plus">~</span><span>${d}</span>`;
+          diffList.appendChild(li);
+        });
+      } else {
+        diffBadge.textContent = en ? 'Baseline Saved' : '基准已建立';
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="diff-plus">+</span><span>${en ? 'Snapshot saved. Next run will automatically compare changes.' : '已保存本次扫描快照，下次双击运行会自动对比变化'}</span>`;
+        diffList.appendChild(li);
+      }
+
+      // Diagnosis
+      const diag = buildDiagnosis(SNAPSHOT, currentLang);
+      const redCount = diag.issues.filter(i => i.level === 'red').length;
+      const amberCount = diag.issues.filter(i => i.level === 'amber').length;
+      const greenCount = diag.goods.length;
+
+      document.getElementById('diagBigNum').textContent = diag.issues.length;
+      document.getElementById('gradeBadge').textContent = redCount === 0
+        ? (en ? 'Grade A · Ready' : 'A 满血就绪级')
+        : redCount <= 2
+          ? (en ? 'Grade B+ · Capped' : 'B+ 甜点受限级')
+          : (en ? 'Grade C · Needs Fix' : 'C 亟待排障级');
+
+      document.getElementById('segmentBar').innerHTML = `
+        <div class="seg-red" style="flex:${Math.max(1, redCount)}"></div>
+        <div class="seg-amber" style="flex:${Math.max(1, amberCount)}"></div>
+        <div class="seg-green" style="flex:${Math.max(2, greenCount)}"></div>
+      `;
+      document.getElementById('segmentLabels').innerHTML = en ? `
+        <span>🔴 ${redCount} Critical</span>
+        <span>🟡 ${amberCount} Capped</span>
+        <span>🟢 ${greenCount} Healthy</span>
+      ` : `
+        <span>🔴 ${redCount} 处立刻卡脖子</span>
+        <span>🟡 ${amberCount} 处跑大模型受限</span>
+        <span>🟢 ${greenCount} 项健康就绪</span>
+      `;
+
+      const priorityList = document.getElementById('priorityList');
+      priorityList.innerHTML = '';
+      document.getElementById('priorityTag').textContent = `TOP ${diag.topFixes.length}`;
+      diag.topFixes.forEach((f, i) => {
+        const li = document.createElement('li');
+        li.className = 'priority-item';
+        const cmdHtml = f.cmd ? '<div class="priority-cmd">' + f.cmd + '</div>' : '';
+        li.innerHTML = '<div class="priority-item-head">' + (i + 1) + '. ' + f.head + '</div><div class="priority-item-desc">' + f.desc + '</div>' + cmdHtml;
+        priorityList.appendChild(li);
+      });
+
+      const checklistContainer = document.getElementById('checklistContainer');
+      checklistContainer.innerHTML = '';
+      [...diag.issues, ...diag.goods].forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'check-item';
+        const dotCls = item.level === 'red' ? 'dot-red' : item.level === 'amber' ? 'dot-amber' : 'dot-green';
+        li.innerHTML = `
+          <span class="check-dot ${dotCls}"></span>
+          <div class="check-content">
+            <div class="check-title">${item.title}</div>
+            <div class="check-note">${item.note}</div>
+          </div>
+        `;
+        checklistContainer.appendChild(li);
+      });
+
+      // Appendix
+      const appendixItems = [
+        { k: en ? "Brand & Model" : "电脑品牌与型号", v: `${SNAPSHOT.brand} ${SNAPSHOT.model}`, status: "" },
+        { k: en ? "Motherboard & BIOS" : "主板与 BIOS", v: `${SNAPSHOT.board} / BIOS ${SNAPSHOT.bios}`, status: "" },
+        { k: en ? "Operating System" : "操作系统", v: `${SNAPSHOT.os} (Build ${SNAPSHOT.osBuild})`, status: "" },
+        { k: en ? "PowerShell Engine" : "PowerShell 终端版本", v: `PowerShell ${SNAPSHOT.psVersion}`, status: "ok" },
+        { k: en ? "Processor (CPU)" : "处理器 (CPU)", v: `${SNAPSHOT.cpu} (${SNAPSHOT.cpuCores}C/${SNAPSHOT.cpuThreads}T)`, status: "ok" },
+        { k: en ? "Physical RAM" : "物理内存总量", v: `${SNAPSHOT.ramGB} GB (${SNAPSHOT.ramModules})`, status: SNAPSHOT.ramGB <= 16.5 ? "warn" : "ok" },
+        { k: en ? "Discrete GPU" : "独立显卡 (GPU)", v: SNAPSHOT.gpu, status: "ok" },
+        { k: en ? "Dedicated VRAM" : "专用显存 (VRAM)", v: `Total ${SNAPSHOT.vramTotalMiB} MiB / Used ${SNAPSHOT.vramUsedMiB} MiB / Free ${SNAPSHOT.vramFreeMiB} MiB`, status: SNAPSHOT.vramFreeMiB < 6500 ? "warn" : "ok" },
+        { k: en ? "NVIDIA Driver & Max CUDA" : "NVIDIA 驱动与最高 CUDA", v: `Driver ${SNAPSHOT.nvDriver} / CUDA ${SNAPSHOT.cudaMax}`, status: "ok" },
+        { k: en ? "GPU Power & Temp" : "显卡功耗与温度", v: `${SNAPSHOT.gpuPowerDraw} / ${SNAPSHOT.gpuPowerCap} | ${SNAPSHOT.gpuTemp} (${SNAPSHOT.gpuPerfState})`, status: "" },
+        ...SNAPSHOT.disks.map(d => ({ k: en ? `Disk ${d.Drive} Space` : `磁盘 ${d.Drive} 容量`, v: `Total ${d.TotalGB} GB / Free ${d.FreeGB} GB`, status: d.FreeGB > 200 ? "ok" : d.FreeGB < 50 ? "warn" : "" })),
+        { k: en ? "Global Python" : "全局 Python", v: SNAPSHOT.tools.python, status: "ok" },
+        { k: en ? "Global PyTorch" : "全局 PyTorch 版本", v: `${SNAPSHOT.torch.version} (CUDA Runtime: ${SNAPSHOT.torch.cudaRuntime})`, status: SNAPSHOT.torch.cudaAvailable === 'True' ? "ok" : "warn" },
+        { k: "torch.cuda.is_available", v: SNAPSHOT.torch.cudaAvailable, status: SNAPSHOT.torch.cudaAvailable === 'True' ? "ok" : "warn" },
+        { k: en ? "Conda & Envs Count" : "Conda 状态与环境数", v: `${SNAPSHOT.tools.conda} (${SNAPSHOT.condaEnvs.length} envs)`, status: "ok" },
+        { k: en ? "Conda Environments" : "Conda 环境列表", v: SNAPSHOT.condaEnvs.join(', ') || 'None', status: "" },
+        { k: "uv / Git", v: `${SNAPSHOT.tools.uv} / ${SNAPSHOT.tools.git}`, status: "ok" },
+        { k: "Node.js / pnpm", v: `${SNAPSHOT.tools.node} / pnpm ${SNAPSHOT.tools.pnpm}`, status: "ok" },
+        { k: "VS Code CLI (code)", v: SNAPSHOT.tools.code, status: "ok" },
+        { k: "Rust / .NET / Docker", v: `${SNAPSHOT.tools.rust} | .NET ${SNAPSHOT.tools.dotnet} | ${SNAPSHOT.tools.docker}`, status: "" },
+        { k: "FFmpeg / nvcc", v: `FFmpeg: ${SNAPSHOT.tools.ffmpeg} | nvcc: ${SNAPSHOT.tools.nvcc}`, status: "" }
+      ];
+
+      document.getElementById('appendixTitle').textContent = en
+        ? `All Probed Fields & Values (Technical Appendix · ${appendixItems.length} items)`
+        : `全部探测项和读到的值（底层技术附录 · 共 ${appendixItems.length} 项）`;
+
+      const appendixGrid = document.getElementById('appendixGrid');
+      const kw = (document.getElementById('appendixSearch').value || '').trim().toLowerCase();
       appendixGrid.innerHTML = '';
       appendixItems.forEach(item => {
         if (kw && !item.k.toLowerCase().includes(kw) && !String(item.v).toLowerCase().includes(kw)) return;
@@ -1063,67 +1312,19 @@ $htmlTemplate = @'
         appendixGrid.appendChild(row);
       });
     }
-    renderAppendix();
-    document.getElementById('appendixSearch').addEventListener('input', e => renderAppendix(e.target.value));
 
-    // Popover interactions
-    const popover = document.getElementById('cluePopover');
-    const popType = document.getElementById('popType');
-    const popField = document.getElementById('popField');
-    const popReason = document.getElementById('popReason');
-    let pinnedClue = null;
+    document.getElementById('btnLangZh').addEventListener('click', () => { currentLang = 'zh'; expanded = false; renderAll(); });
+    document.getElementById('btnLangEn').addEventListener('click', () => { currentLang = 'en'; expanded = false; renderAll(); });
+    document.getElementById('appendixSearch').addEventListener('input', () => renderAll());
 
-    const TYPE_MAP = {
-      red: { text: '🔴 会卡住你的短板', cls: 'pop-type type-red' },
-      fact: { text: '⚪ 机子实测数据', cls: 'pop-type type-fact' },
-      infer: { text: '🟢 使用习惯侧写依据', cls: 'pop-type type-infer' }
-    };
-
-    function showPopover(target) {
-      const t = target.getAttribute('data-type') || 'fact';
-      const cfg = TYPE_MAP[t] || TYPE_MAP.fact;
-      popType.className = cfg.cls;
-      popType.innerHTML = `<span>${cfg.text}</span><span style="font-weight:400;opacity:0.7;">${pinnedClue === target ? '已固定' : '点按可固定'}</span>`;
-      popField.textContent = target.getAttribute('data-field') || '';
-      popReason.textContent = target.getAttribute('data-reason') || '';
-      popover.classList.add('visible');
-
-      const rect = target.getBoundingClientRect();
-      const popWidth = 340;
-      let left = Math.max(12, Math.min(rect.left + rect.width / 2 - popWidth / 2, window.innerWidth - popWidth - 12));
-      let top = rect.bottom + 10;
-      const popHeight = popover.offsetHeight || 120;
-      if (top + popHeight > window.innerHeight - 12) top = rect.top - popHeight - 10;
-      popover.style.left = left + 'px';
-      popover.style.top = Math.max(12, top) + 'px';
-    }
-
-    document.querySelectorAll('.clue').forEach(el => {
-      el.addEventListener('mouseenter', () => { if (!pinnedClue) showPopover(el); });
-      el.addEventListener('mouseleave', () => { if (!pinnedClue) popover.classList.remove('visible'); });
-      el.addEventListener('click', e => {
-        e.stopPropagation();
-        if (pinnedClue === el) {
-          el.classList.remove('active');
-          pinnedClue = null;
-          popover.classList.remove('visible');
-        } else {
-          if (pinnedClue) pinnedClue.classList.remove('active');
-          pinnedClue = el;
-          el.classList.add('active');
-          showPopover(el);
-        }
-      });
-    });
     document.addEventListener('click', () => {
       if (pinnedClue) {
         pinnedClue.classList.remove('active');
         pinnedClue = null;
-        popover.classList.remove('visible');
+        document.getElementById('cluePopover').classList.remove('visible');
       }
     });
 
-    // Toast & Buttons
     const toast = document.getElementById('toast');
     let toastTimer = null;
     function showToast(msg) {
@@ -1135,14 +1336,17 @@ $htmlTemplate = @'
 
     document.getElementById('btnCopyPortrait').addEventListener('click', () => {
       const text = Array.from(document.querySelectorAll('.narrative-p')).map(p => p.innerText.replace(/\s+/g, ' ').trim()).join('\n\n');
-      navigator.clipboard.writeText(`【寻祎居 · AI 眼里的这台电脑 (${SNAPSHOT.fingerprintId})】\n\n${text}`).then(() => showToast('✅ 已复制 7 段侧写'));
+      navigator.clipboard.writeText(`【XunyiJu AI PC Portrait (${SNAPSHOT.fingerprintId})】\n\n${text}`).then(() => {
+        showToast(currentLang === 'en' ? '✅ Copied 7-paragraph portrait' : '✅ 已复制 7 段侧写');
+      });
     });
 
     document.getElementById('btnCopyJson').addEventListener('click', () => {
-      navigator.clipboard.writeText(JSON.stringify(SNAPSHOT, null, 2)).then(() => showToast('🧬 已复制 JSON 快照'));
+      navigator.clipboard.writeText(JSON.stringify(SNAPSHOT, null, 2)).then(() => {
+        showToast(currentLang === 'en' ? '🧬 Copied JSON snapshot' : '🧬 已复制 JSON 快照');
+      });
     });
 
-    let expanded = false;
     document.getElementById('btnToggleClues').addEventListener('click', e => {
       expanded = !expanded;
       document.querySelectorAll('.narrative-p').forEach(p => {
@@ -1160,7 +1364,9 @@ $htmlTemplate = @'
           p.appendChild(dump);
         }
       });
-      e.currentTarget.textContent = expanded ? '🔼 收起所有判断依据' : '💡 展开所有判断依据';
+      e.currentTarget.textContent = expanded
+        ? (currentLang === 'en' ? '🔼 Hide All Evidence' : '🔼 收起所有判断依据')
+        : (currentLang === 'en' ? '💡 Expand All Evidence' : '💡 展开所有判断依据');
     });
 
     const rawModal = document.getElementById('rawModal');
@@ -1170,21 +1376,31 @@ $htmlTemplate = @'
     rawModal.addEventListener('click', e => { if (e.target === rawModal) rawModal.classList.remove('open'); });
 
     document.getElementById('btnCopyCmd').addEventListener('click', () => {
-      navigator.clipboard.writeText('powershell -NoProfile -ExecutionPolicy Bypass -File .\\AI_PC_Environment_Audit.ps1').then(() => showToast('⚡ 已复制重测命令'));
+      navigator.clipboard.writeText('pwsh -NoProfile -ExecutionPolicy Bypass -File .\\AI_PC_Environment_Audit.ps1').then(() => {
+        showToast(currentLang === 'en' ? '⚡ Copied PowerShell 7 command' : '⚡ 已复制 PowerShell 7 重测命令');
+      });
     });
+
+    renderAll();
   </script>
 </body>
 </html>
 '@
 
 $finalHtml = $htmlTemplate.Replace('__SNAPSHOT_JSON__', $snapshotJsonStr).Replace('__PREV_JSON__', $prevJsonStr).Replace('__RAW_REPORT_JSON__', $rawReportEscaped)
-$finalHtml | Set-Content -LiteralPath $htmlPath -Encoding UTF8
+[System.IO.File]::WriteAllText($htmlPath, $finalHtml, $utf8Bom)
 
 Write-Host ""
 Write-Host "==========================================================" -ForegroundColor Green
-Write-Host " 扫描完成！" -ForegroundColor Green
-Write-Host " 1. 可视化侧写网页 : $htmlPath" -ForegroundColor Green
-Write-Host " 2. 原始文本报告   : $reportPath" -ForegroundColor Green
+if ($isEn) {
+    Write-Host " Audit Complete! (PowerShell $($PSVersionTable.PSVersion))" -ForegroundColor Green
+    Write-Host " 1. Interactive Portrait : $htmlPath" -ForegroundColor Green
+    Write-Host " 2. Raw Text Report      : $reportPath" -ForegroundColor Green
+} else {
+    Write-Host " 扫描完成！(PowerShell $($PSVersionTable.PSVersion))" -ForegroundColor Green
+    Write-Host " 1. 可视化侧写网页 : $htmlPath" -ForegroundColor Green
+    Write-Host " 2. 原始文本报告   : $reportPath" -ForegroundColor Green
+}
 Write-Host "==========================================================" -ForegroundColor Green
 
 if (-not $NoOpenBrowser) {
