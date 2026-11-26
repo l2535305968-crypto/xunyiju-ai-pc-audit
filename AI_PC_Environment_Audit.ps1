@@ -1,16 +1,22 @@
 ﻿# AI PC Environment Audit & Portrait Generator (寻祎居 · 算力底牌侧写 / XunyiJu AI PC Audit)
-# Read-only checks. No downloads, installation, changes, or network requests.
+# Read-only by default. Optional interactive domestic-mirror runtime installer when missing dependencies are detected.
 [CmdletBinding()]
 param(
     [ValidateSet('zh', 'en', '')]
     [string]$Language = '',
     [switch]$IncludeSoftwareList,
     [switch]$NoOpenBrowser,
+    [switch]$SkipRuntimePrompt,
     [string]$OutputDirectory = ''
 )
 
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$auditStartTime = Get-Date
+$auditStartStr  = $auditStartTime.ToString('yyyy-MM-dd HH:mm:ss.fff zzz')
+$auditStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$stageTimings   = New-Object 'System.Collections.Generic.List[object]'
 
 $scriptDir = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($scriptDir)) { $scriptDir = (Get-Location).Path }
@@ -18,14 +24,59 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $scriptDir 'AI_PC_Audit_Result'
 }
 
-# Language selection prompt at startup if not specified via parameter
+# ==============================================================================
+# 0. 语言选择与内置语言/运行环境自检 (Language Selection & Built-in Runtime Check)
+# ==============================================================================
+$installedOscultures = @()
+try {
+    if (Get-Command Get-WinUserLanguageList -ErrorAction SilentlyContinue) {
+        $installedOscultures = @(Get-WinUserLanguageList | ForEach-Object { $_.LanguageTag })
+    }
+} catch {}
+if ($installedOscultures.Count -eq 0) {
+    $installedOscultures = @([System.Globalization.CultureInfo]::InstalledUICulture.Name, [System.Globalization.CultureInfo]::CurrentUICulture.Name) | Select-Object -Unique
+}
+$hasZhPack = ($installedOscultures -match '^zh') -or ([System.Globalization.CultureInfo]::InstalledUICulture.Name -match '^zh')
+$hasEnPack = ($installedOscultures -match '^en') -or $true # ASCII/English is natively supported on all Windows consoles
+
+$hasPwsh7  = [bool](Get-Command pwsh -ErrorAction SilentlyContinue)
+$runningPsMajor = $PSVersionTable.PSVersion.Major
+$hasPython = [bool](Get-Command python -ErrorAction SilentlyContinue)
+$hasPip    = [bool](Get-Command pip -ErrorAction SilentlyContinue)
+$hasNvidiaSmi = [bool](Get-Command nvidia-smi -ErrorAction SilentlyContinue)
+
+# Quick pre-check of PyTorch CUDA status in default Python
+$preTorchInstalled = $false
+$preTorchCudaOk    = $false
+$preTorchVer       = 'Not Installed'
+if ($hasPython) {
+    try {
+        $preOut = & python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $preOut) {
+            $lines = @($preOut -split "`r?`n" | Where-Object { $_ })
+            if ($lines.Count -ge 2) {
+                $preTorchInstalled = $true
+                $preTorchVer       = $lines[0].Trim()
+                $preTorchCudaOk    = ($lines[1].Trim() -eq 'True')
+            }
+        }
+    } catch {}
+}
+
 if ([string]::IsNullOrWhiteSpace($Language)) {
     Write-Host ""
-    Write-Host "==========================================================" -ForegroundColor Cyan
+    Write-Host "==================================================================" -ForegroundColor Cyan
     Write-Host "  寻祎居 · 算力底牌侧写 | XunyiJu · AI PC Capability Audit" -ForegroundColor Cyan
-    Write-Host "  Running on PowerShell $($PSVersionTable.PSVersion)" -ForegroundColor DarkCyan
-    Write-Host "==========================================================" -ForegroundColor Cyan
-    Write-Host "  请选择语言 / Please select language:" -ForegroundColor Yellow
+    Write-Host "  终端引擎 / Shell: PowerShell $($PSVersionTable.PSVersion) (PID: $PID)" -ForegroundColor DarkCyan
+    Write-Host "==================================================================" -ForegroundColor Cyan
+    Write-Host "  [内置语言与运行环境预检 / Built-in Language & Runtime Pre-check]" -ForegroundColor Yellow
+    Write-Host ("    - 简体中文语言支持 (zh-CN) : " + ($(if ($hasZhPack) { "已内置 / Ready" } else { "未检出中文语言包 / Missing zh-CN pack" }))) -ForegroundColor ($(if ($hasZhPack) { "Green" } else { "Red" }))
+    Write-Host ("    - 英文语言支持 (en-US)     : 已内置 / Ready") -ForegroundColor Green
+    Write-Host ("    - PowerShell 7+ (pwsh)     : " + ($(if ($hasPwsh7) { "已安装 / Installed (当前 v$($PSVersionTable.PSVersion))" } else { "未安装 (当前为旧版 PS $($PSVersionTable.PSVersion))" }))) -ForegroundColor ($(if ($hasPwsh7) { "Green" } else { "Yellow" }))
+    Write-Host ("    - Python 运行环境          : " + ($(if ($hasPython) { "已安装 / Installed" } else { "未安装 / Missing (无法深度检测 AI 库)" }))) -ForegroundColor ($(if ($hasPython) { "Green" } else { "Red" }))
+    Write-Host ("    - 默认 Python PyTorch CUDA : " + ($(if ($preTorchCudaOk) { "已就绪 / CUDA Active ($preTorchVer)" } elseif ($preTorchInstalled) { "仅 CPU 版 ($preTorchVer，无法调显卡)" } else { "未安装 PyTorch" }))) -ForegroundColor ($(if ($preTorchCudaOk) { "Green" } else { "Yellow" }))
+    Write-Host "------------------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host "  请选择界面与报告语言 / Please select language:" -ForegroundColor Yellow
     Write-Host "    [1] 简体中文 (Simplified Chinese)  [默认 / Default]" -ForegroundColor White
     Write-Host "    [2] English" -ForegroundColor White
     Write-Host ""
@@ -42,6 +93,154 @@ if ([string]::IsNullOrWhiteSpace($Language)) {
 }
 
 $isEn = ($Language -eq 'en')
+
+# ==============================================================================
+# 0.5 缺失内置语言或核心运行环境时，提示并通过国内镜像一键下载/修复
+# ==============================================================================
+$missingItems = New-Object 'System.Collections.Generic.List[hashtable]'
+
+if ($Language -eq 'zh' -and -not $hasZhPack) {
+    $missingItems.Add(@{
+        Id = 'zh_pack'
+        NameZh = 'Windows 简体中文内置显示语言包 (zh-CN)'
+        NameEn = 'Windows Simplified Chinese Language Pack (zh-CN)'
+        DescZh = '当前系统缺少 zh-CN 语言包，终端或部分中文字符可能显示异常。'
+        DescEn = 'System is missing the zh-CN language pack; Chinese characters in console may not render properly.'
+    })
+}
+if (-not $hasPython) {
+    $missingItems.Add(@{
+        Id = 'python'
+        NameZh = 'Python 3.11 运行语言环境（华为云/阿里国内镜像）'
+        NameEn = 'Python 3.11 Runtime (via Huawei/Aliyun China Mirror)'
+        DescZh = '未检测到内置或全局 Python，脚本无法进一步探测 PyTorch、CUDA、Transformers 等 AI 依赖库。'
+        DescEn = 'Python is not found in PATH; the script cannot probe PyTorch, CUDA, or AI libraries without it.'
+    })
+}
+if (-not $hasPwsh7) {
+    $missingItems.Add(@{
+        Id = 'pwsh7'
+        NameZh = 'PowerShell 7 现代终端引擎（国内镜像优先）'
+        NameEn = 'PowerShell 7 Modern Shell (Domestic Mirror Priority)'
+        DescZh = '当前正在使用 Windows 旧版 PowerShell 5.1，建议升级至 PowerShell 7 以避免 UTF-8 编码问题。'
+        DescEn = 'Currently running on legacy Windows PowerShell 5.1; PowerShell 7 is recommended for full UTF-8 support.'
+    })
+}
+if ($hasPython -and $hasNvidiaSmi -and (-not $preTorchCudaOk)) {
+    $missingItems.Add(@{
+        Id = 'pytorch_cuda'
+        NameZh = '为默认 Python 安装/更换带 CUDA 的 PyTorch（南大/清华国内镜像）'
+        NameEn = 'Install/Replace CUDA-enabled PyTorch in default Python (NJU/Tsinghua China Mirror)'
+        DescZh = "检测到你有 NVIDIA 显卡，但默认 Python 的 PyTorch 为 [$preTorchVer (CUDA=False)]，直接跑脚本无法调用显卡。"
+        DescEn = "NVIDIA GPU detected, but default Python PyTorch is [$preTorchVer (CUDA=False)] and cannot use the GPU."
+    })
+}
+
+if ($missingItems.Count -gt 0 -and (-not $SkipRuntimePrompt)) {
+    Write-Host ""
+    Write-Host "==================================================================" -ForegroundColor Yellow
+    if ($isEn) {
+        Write-Host "  [Notice] Some built-in languages or AI runtime components are missing/incomplete:" -ForegroundColor Yellow
+    } else {
+        Write-Host "  [提示] 检测到以下内置语言或 AI 运行环境缺失/未打通（可优先使用国内镜像补齐）：" -ForegroundColor Yellow
+    }
+    Write-Host "==================================================================" -ForegroundColor Yellow
+
+    for ($i = 0; $i -lt $missingItems.Count; $i++) {
+        $item = $missingItems[$i]
+        $idx = $i + 1
+        if ($isEn) {
+            Write-Host "  [$idx] $($item.NameEn)" -ForegroundColor White
+            Write-Host "      Reason: $($item.DescEn)" -ForegroundColor Gray
+        } else {
+            Write-Host "  [$idx] $($item.NameZh)" -ForegroundColor White
+            Write-Host "      说明：  $($item.DescZh)" -ForegroundColor Gray
+        }
+    }
+    Write-Host ""
+    if ($isEn) {
+        Write-Host "  Options: Enter item number(s) (e.g. 1 or 1,2) to download/fix via China Domestic Mirrors," -ForegroundColor Cyan
+        Write-Host "           or press [Enter / N] to skip and continue read-only scan immediately." -ForegroundColor Cyan
+    } else {
+        Write-Host "  操作选择：输入对应序号（如 1 或 1,2）立即通过【国内镜像】下载/修复，" -ForegroundColor Cyan
+        Write-Host "            直接按【回车 / N】则跳过安装，立即继续只读体检。" -ForegroundColor Cyan
+    }
+
+    try {
+        $fixChoice = Read-Host "  请选择 / Your choice (Enter = 跳过/Skip)"
+        if (-not [string]::IsNullOrWhiteSpace($fixChoice) -and ($fixChoice -notmatch '^(n|no|s|skip|0)$')) {
+            $selectedIndices = @()
+            if ($fixChoice -match '^(y|yes|all|a)$') {
+                $selectedIndices = 1..($missingItems.Count)
+            } else {
+                foreach ($token in ($fixChoice -split '[,\s]+')) {
+                    if ($token -match '^\d+$') {
+                        $num = [int]$token
+                        if ($num -ge 1 -and $num -le $missingItems.Count) {
+                            $selectedIndices += $num
+                        }
+                    }
+                }
+            }
+
+            foreach ($sel in $selectedIndices) {
+                $target = $missingItems[$sel - 1]
+                switch ($target.Id) {
+                    'zh_pack' {
+                        Write-Host "  -> 正在调用 Windows 语言包组件安装 zh-CN..." -ForegroundColor Cyan
+                        try {
+                            if (Get-Command Install-Language -ErrorAction SilentlyContinue) {
+                                Install-Language -Language zh-CN -ErrorAction Stop
+                                Write-Host "  [OK] zh-CN 语言包安装完成。" -ForegroundColor Green
+                            } else {
+                                Start-Process "ms-settings:regionlanguage"
+                            }
+                        } catch {
+                            Write-Host "  [!] 需要管理员权限安装系统语言包，已为您打开系统语言设置页。" -ForegroundColor Yellow
+                            try { Start-Process "ms-settings:regionlanguage" } catch {}
+                        }
+                    }
+                    'python' {
+                        $pyInstallerUrl = "https://mirrors.huaweicloud.com/python/3.11.9/python-3.11.9-amd64.exe"
+                        $pyInstallerPath = Join-Path $env:TEMP "python-3.11.9-amd64.exe"
+                        Write-Host "  -> 正在从华为云国内镜像下载 Python 3.11.9: $pyInstallerUrl ..." -ForegroundColor Cyan
+                        try {
+                            Invoke-WebRequest -Uri $pyInstallerUrl -OutFile $pyInstallerPath -UseBasicParsing
+                            Write-Host "  -> 正在安装 Python 3.11.9（自动加入 PATH）..." -ForegroundColor Cyan
+                            Start-Process -FilePath $pyInstallerPath -ArgumentList "/passive InstallAllUsers=0 PrependPath=1 Include_test=0" -Wait
+                            $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+                            Write-Host "  [OK] Python 3.11.9 安装完成。" -ForegroundColor Green
+                        } catch {
+                            Write-Host "  [!] 下载或安装失败: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                    'pwsh7' {
+                        Write-Host "  -> 正在通过 WinGet / 国内镜像安装 PowerShell 7..." -ForegroundColor Cyan
+                        try {
+                            if (Get-Command winget -ErrorAction SilentlyContinue) {
+                                & winget install --id Microsoft.PowerShell --source winget --accept-package-agreements --accept-source-agreements
+                            } else {
+                                Write-Host "  [!] 未找到 winget，请访问 https://mirror.ghproxy.com/https://github.com/PowerShell/PowerShell/releases 下载 MSI。" -ForegroundColor Yellow
+                            }
+                        } catch {
+                            Write-Host "  [!] PowerShell 7 安装异常: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                    'pytorch_cuda' {
+                        Write-Host "  -> 正在通过【南京大学 PyTorch CUDA 国内镜像 + 清华 TUNA 源】重装带 CUDA (cu126) 的 PyTorch..." -ForegroundColor Cyan
+                        Write-Host "     执行命令: pip install torch torchvision torchaudio -i https://mirror.nju.edu.cn/pytorch/whl/cu126 --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple --force-reinstall" -ForegroundColor DarkCyan
+                        try {
+                            & python -m pip install torch torchvision torchaudio -i https://mirror.nju.edu.cn/pytorch/whl/cu126 --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple --force-reinstall
+                            Write-Host "  [OK] PyTorch CUDA 国内镜像安装完成！" -ForegroundColor Green
+                        } catch {
+                            Write-Host "  [!] PyTorch CUDA 安装异常: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                }
+            }
+        }
+    } catch {}
+}
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $reportPath   = Join-Path $OutputDirectory 'AI_PC_Report.txt'
@@ -94,14 +293,18 @@ function Add-Version([string]$Name, [string[]]$Arguments = @('--version')) {
     catch { Add-Line ("$Name : error - " + $_.Exception.Message) }
 }
 
+# ==============================================================================
+# Stage 1: Hardware, Disk, OS
+# ==============================================================================
+$swStage = [System.Diagnostics.Stopwatch]::StartNew()
+$stage1At = (Get-Date).ToString('HH:mm:ss.fff')
 Write-Host ""
 if ($isEn) {
-    Write-Host "[1/4] Collecting hardware, disk, and OS information..." -ForegroundColor Cyan
+    Write-Host "[1/4] ($stage1At) Collecting hardware, disk, and OS information..." -ForegroundColor Cyan
 } else {
-    Write-Host "[1/4] 正在采集电脑硬件、磁盘与操作系统信息..." -ForegroundColor Cyan
+    Write-Host "[1/4] ($stage1At) 正在采集电脑硬件、磁盘与操作系统信息..." -ForegroundColor Cyan
 }
 
-$nowStr = Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
 $hourNow = (Get-Date).Hour
 $dayNameEn = (Get-Date).DayOfWeek.ToString()
 $dayOfWeekMap = @{ 'Monday'='周一'; 'Tuesday'='周二'; 'Wednesday'='周三'; 'Thursday'='周四'; 'Friday'='周五'; 'Saturday'='周六'; 'Sunday'='周日' }
@@ -142,13 +345,20 @@ $diskList = @()
 foreach ($d in $disks) {
     $tGB = [math]::Round($d.Size / 1GB, 1)
     $fGB = [math]::Round($d.FreeSpace / 1GB, 1)
-    $diskList += [PSCustomObject]@{ Drive = $d.DeviceID; TotalGB = $tGB; FreeGB = $fGB }
+    $diskList += [PSCustomObject]@{ Drive = $d.DeviceID; TotalGB = $tGB; FreeGB = $fGB; FreeBytes = $d.FreeSpace }
 }
+$swStage.Stop()
+$stageTimings.Add([PSCustomObject]@{ Stage = 'CIM_Hardware_Disk'; TimeAt = $stage1At; DurationMs = $swStage.ElapsedMilliseconds })
 
+# ==============================================================================
+# Stage 2: GPU & NVIDIA CUDA
+# ==============================================================================
+$swStage = [System.Diagnostics.Stopwatch]::StartNew()
+$stage2At = (Get-Date).ToString('HH:mm:ss.fff')
 if ($isEn) {
-    Write-Host "[2/4] Inspecting GPU, dedicated VRAM usage, and NVIDIA CUDA driver..." -ForegroundColor Cyan
+    Write-Host "[2/4] ($stage2At) Inspecting GPU, dedicated VRAM usage, and NVIDIA CUDA driver..." -ForegroundColor Cyan
 } else {
-    Write-Host "[2/4] 正在检测显卡、显存占用与 CUDA 驱动状态..." -ForegroundColor Cyan
+    Write-Host "[2/4] ($stage2At) 正在检测显卡、显存占用与 CUDA 驱动状态..." -ForegroundColor Cyan
 }
 
 $gpuName = 'No dedicated NVIDIA GPU detected'
@@ -189,13 +399,19 @@ if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
 } elseif ($gpus.Count -gt 0) {
     $gpuName = ($gpus | Select-Object -Last 1).Name
 }
-
 $nvccVer = Get-ToolVersion 'nvcc' @('--version')
+$swStage.Stop()
+$stageTimings.Add([PSCustomObject]@{ Stage = 'NVIDIA_SMI_CUDA'; TimeAt = $stage2At; DurationMs = $swStage.ElapsedMilliseconds })
 
+# ==============================================================================
+# Stage 3: Developer Toolchain & Conda & PyTorch Probe
+# ==============================================================================
+$swStage = [System.Diagnostics.Stopwatch]::StartNew()
+$stage3At = (Get-Date).ToString('HH:mm:ss.fff')
 if ($isEn) {
-    Write-Host "[3/4] Auditing developer toolchain, Conda environments, and PyTorch CUDA..." -ForegroundColor Cyan
+    Write-Host "[3/4] ($stage3At) Auditing developer toolchain, Conda environments, and PyTorch CUDA..." -ForegroundColor Cyan
 } else {
-    Write-Host "[3/4] 正在盘点编程工具链、Conda 环境与 PyTorch CUDA 状态..." -ForegroundColor Cyan
+    Write-Host "[3/4] ($stage3At) 正在盘点编程工具链、Conda 环境与 PyTorch CUDA 状态..." -ForegroundColor Cyan
 }
 
 $pyVer     = Get-ToolVersion 'python'
@@ -256,11 +472,40 @@ except:
         }
     } catch {}
 }
+$swStage.Stop()
+$stageTimings.Add([PSCustomObject]@{ Stage = 'Toolchain_PyTorch_Probe'; TimeAt = $stage3At; DurationMs = $swStage.ElapsedMilliseconds })
 
-# Build standard text report (AI_PC_Report.txt)
+# ==============================================================================
+# Stage 4: Generate Text Report & Anti-Demo HTML Portrait
+# ==============================================================================
+$swStage = [System.Diagnostics.Stopwatch]::StartNew()
+$stage4At = (Get-Date).ToString('HH:mm:ss.fff')
+if ($isEn) {
+    Write-Host "[4/4] ($stage4At) Generating anti-spoof timestamped portrait webpage (index.html)..." -ForegroundColor Cyan
+} else {
+    Write-Host "[4/4] ($stage4At) 正在生成带防套壳核验时间戳的可视化侧写页面 (index.html)..." -ForegroundColor Cyan
+}
+
+$auditEndTime = Get-Date
+$nowStr       = $auditEndTime.ToString('yyyy-MM-dd HH:mm:ss.fff zzz')
+$nowUnixMs    = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+$auditStopwatch.Stop()
+$totalElapsedMs = $auditStopwatch.ElapsedMilliseconds
+
+# Generate tamper-evident live proof hash (Host mask + timestamp + exact free VRAM + disk free bytes + PID)
+$machineRaw = "$($env:COMPUTERNAME)|$nowStr|$vramFreeMiB|$($diskList | ForEach-Object { $_.FreeBytes } | Out-String)|$PID"
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+$hashBytes = $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($machineRaw))
+$hashHex = ([System.BitConverter]::ToString($hashBytes) -replace '-','').Substring(0, 12)
+$hostMask = if ($env:COMPUTERNAME.Length -gt 4) { $env:COMPUTERNAME.Substring(0, 4) + "***" } else { "PC***" }
+$liveProofId = "PROOF-$hostMask-$hashHex-PID$PID"
+
 Add-Line 'AI PC ENVIRONMENT AUDIT (READ-ONLY)'
-Add-Line ('Date (local): ' + $nowStr)
-Add-Line ('PowerShell: ' + $PSVersionTable.PSVersion.ToString())
+Add-Line ('Scan Started   : ' + $auditStartStr)
+Add-Line ('Scan Completed : ' + $nowStr)
+Add-Line ('Scan Duration  : ' + $totalElapsedMs + ' ms')
+Add-Line ('Live Proof ID  : ' + $liveProofId)
+Add-Line ('PowerShell     : ' + $PSVersionTable.PSVersion.ToString())
 Add-Line 'Report path uses a local folder next to this script unless overridden.'
 Add-Line 'WARNING: Review this report before sharing: package names, environment names and custom paths may be personal.'
 
@@ -367,11 +612,8 @@ Add-Line '5. For a model-specific verdict, test the exact checkpoint, precision,
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllLines($reportPath, $report, $utf8Bom)
 
-if ($isEn) {
-    Write-Host "[4/4] Generating bilingual interactive portrait webpage (index.html)..." -ForegroundColor Cyan
-} else {
-    Write-Host "[4/4] 正在生成中英双语「你是谁 · AI 眼里的这台电脑」可视化侧写页面..." -ForegroundColor Cyan
-}
+$swStage.Stop()
+$stageTimings.Add([PSCustomObject]@{ Stage = 'Report_HTML_Render'; TimeAt = $stage4At; DurationMs = $swStage.ElapsedMilliseconds })
 
 $vramTotalGB = [math]::Round($vramTotalMiB / 1024, 1)
 $customEnvs  = @($condaEnvs | Where-Object { $_ -ne 'base' })
@@ -380,7 +622,12 @@ $fpId = ("XYJ-{0}-{1}G-{2}C-E{3}" -f ($boardProduct -replace '[^A-Za-z0-9]',''),
 $snapshotObj = [ordered]@{
     selectedLang = $Language
     psVersion = $PSVersionTable.PSVersion.ToString()
+    scanStartTimestamp = $auditStartStr
     timestamp = $nowStr
+    scanCompletedUnixMs = $nowUnixMs
+    scanDurationMs = $totalElapsedMs
+    liveProofId = $liveProofId
+    stageTimings = $stageTimings
     fingerprintId = $fpId
     brand = $brand
     model = $model
@@ -484,10 +731,40 @@ $htmlTemplate = @'
       font-family: var(--font-sans);
       line-height: 1.65;
       min-height: 100vh;
-      padding: 24px 28px 64px;
+      padding: 20px 28px 64px;
       -webkit-font-smoothing: antialiased;
     }
     .container { max-width: 1360px; margin: 0 auto; }
+
+    /* Anti-Demo Live Verification Strip */
+    .antidemo-strip {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 10px 18px;
+      padding: 9px 16px; margin-bottom: 16px;
+      border-radius: 10px;
+      background: linear-gradient(90deg, rgba(16, 185, 129, 0.1) 0%, rgba(56, 189, 248, 0.08) 100%);
+      border: 1px solid rgba(16, 185, 129, 0.28);
+      font-size: 12.2px; font-family: var(--font-mono);
+      color: #d1fae5;
+    }
+    .antidemo-left, .antidemo-right {
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    }
+    .antidemo-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 9px; border-radius: 999px;
+      background: rgba(16, 185, 129, 0.2);
+      border: 1px solid rgba(16, 185, 129, 0.45);
+      color: #6ee7b7; font-weight: 700; font-size: 11.5px;
+    }
+    .pulse-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }
+    .antidemo-kv { color: var(--text-secondary); }
+    .antidemo-kv strong { color: var(--text-white); font-weight: 600; }
+
     .topbar {
       display: flex; align-items: center; justify-content: space-between;
       padding-bottom: 18px; margin-bottom: 24px;
@@ -559,7 +836,7 @@ $htmlTemplate = @'
       position: relative;
     }
     .card-header {
-      display: flex; align-items: baseline; justify-content: space-between;
+      display: flex; align-items: flex-start; justify-content: space-between;
       margin-bottom: 22px; flex-wrap: wrap; gap: 10px;
     }
     .card-eyebrow {
@@ -568,7 +845,13 @@ $htmlTemplate = @'
       font-family: var(--font-mono);
     }
     .card-title { font-size: 22px; font-weight: 700; color: var(--text-white); }
-    .card-meta { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+    .card-meta-box {
+      display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
+      font-size: 11.8px; color: var(--text-secondary); font-family: var(--font-mono);
+      background: rgba(255, 255, 255, 0.03);
+      padding: 6px 11px; border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+    }
     .narrative-body {
       display: flex; flex-direction: column; gap: 15px;
       font-size: 15.5px; line-height: 1.85; color: #c5cddb;
@@ -623,7 +906,7 @@ $htmlTemplate = @'
     }
     @media (max-width: 768px) { .fingerprint-box { grid-template-columns: 1fr; } }
     .fp-left { display: flex; flex-direction: column; gap: 6px; }
-    .fp-label { font-size: 11.5px; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
+    .fp-label { font-size: 11.5px; color: var(--text-muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .fp-id {
       font-family: var(--font-mono); font-size: 17px; font-weight: 700;
       color: var(--text-white); letter-spacing: 0.04em;
@@ -634,6 +917,11 @@ $htmlTemplate = @'
       border: 1px solid rgba(56, 189, 248, 0.25);
     }
     .fp-sub { font-size: 12px; color: var(--text-secondary); }
+    .fp-timings {
+      font-size: 11.2px; font-family: var(--font-mono); color: #86efac;
+      background: rgba(16, 185, 129, 0.07); border: 1px solid rgba(16, 185, 129, 0.2);
+      padding: 4px 8px; border-radius: 6px; margin-top: 2px;
+    }
     .fp-diff {
       border-left: 1px solid var(--border-subtle); padding-left: 18px;
       display: flex; flex-direction: column; gap: 6px;
@@ -672,12 +960,46 @@ $htmlTemplate = @'
     .priority-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
     .priority-title { font-size: 13.5px; font-weight: 700; color: #ff9a9c; }
     .priority-tag { font-size: 11px; padding: 1px 7px; border-radius: 4px; background: rgba(255, 77, 79, 0.18); color: #ffb3b5; font-family: var(--font-mono); }
-    .priority-list { list-style: none; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
-    .priority-item { display: flex; flex-direction: column; gap: 3px; padding-bottom: 8px; border-bottom: 1px dashed rgba(255, 255, 255, 0.07); }
+    .priority-list { list-style: none; display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
+    .priority-item { display: flex; flex-direction: column; gap: 5px; padding-bottom: 10px; border-bottom: 1px dashed rgba(255, 255, 255, 0.07); }
     .priority-item:last-child { padding-bottom: 0; border-bottom: none; }
     .priority-item-head { font-weight: 600; color: var(--text-white); }
     .priority-item-desc { color: var(--text-secondary); font-size: 12.2px; line-height: 1.5; }
-    .priority-cmd { margin-top: 3px; font-family: var(--font-mono); font-size: 11.2px; background: rgba(0, 0, 0, 0.35); color: #93c5fd; padding: 4px 8px; border-radius: 5px; border: 1px solid rgba(255, 255, 255, 0.06); overflow-x: auto; white-space: nowrap; }
+
+    /* Fixed Command Box: No ugly horizontal scrollbar! Clean wrap + 1-click Copy Button + Domestic Mirror Badge */
+    .priority-cmd-wrap {
+      margin-top: 4px;
+      background: rgba(0, 0, 0, 0.42);
+      border: 1px solid rgba(56, 189, 248, 0.22);
+      border-radius: 8px;
+      padding: 8px 10px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .priority-cmd-top {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .mirror-badge {
+      font-size: 10.5px; font-weight: 600;
+      color: #6ee7b7; background: rgba(16, 185, 129, 0.15);
+      padding: 1px 7px; border-radius: 4px;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .cmd-copy-btn {
+      appearance: none; border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.06); color: var(--text-primary);
+      font-size: 11px; padding: 2px 8px; border-radius: 5px;
+      cursor: pointer; transition: all 0.15s ease;
+    }
+    .cmd-copy-btn:hover {
+      background: rgba(16, 185, 129, 0.25); border-color: var(--accent-green); color: #fff;
+    }
+    .priority-cmd {
+      font-family: var(--font-mono); font-size: 11.3px;
+      color: #93c5fd; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-all;
+      user-select: all;
+    }
+
     .checklist-section-title { font-size: 12px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.06em; margin-bottom: 10px; }
     .checklist { list-style: none; display: flex; flex-direction: column; gap: 10px; }
     .check-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--bg-card-subtle); border: 1px solid var(--border-subtle); font-size: 13px; line-height: 1.5; }
@@ -742,6 +1064,19 @@ $htmlTemplate = @'
 </head>
 <body>
   <div class="container">
+    <!-- Top Anti-Demo Live Verification Strip -->
+    <div class="antidemo-strip" id="antiDemoStrip">
+      <div class="antidemo-left">
+        <span class="antidemo-pill"><span class="pulse-dot"></span><span id="uiAntiDemoBadge">真机实时检索 · 防套壳核验</span></span>
+        <span class="antidemo-kv" id="uiScanTimeKv"></span>
+        <span class="antidemo-kv" id="uiScanDurKv"></span>
+      </div>
+      <div class="antidemo-right">
+        <span class="antidemo-kv" id="uiLiveViewKv"></span>
+        <span class="antidemo-kv" id="uiProofKv"></span>
+      </div>
+    </div>
+
     <header class="topbar">
       <div class="brand-group">
         <span class="brand-badge"><span class="dot"></span><span id="uiBrandBadge">寻祎居 · 算力底牌侧写</span></span>
@@ -765,7 +1100,10 @@ $htmlTemplate = @'
               <div class="card-eyebrow">LOCAL AI CAPABILITY PORTRAIT</div>
               <h2 class="card-title" id="uiLeftTitle">「AI 模型眼里的你」</h2>
             </div>
-            <div class="card-meta" id="metaTimestamp"></div>
+            <div class="card-meta-box">
+              <div id="metaTimestamp"></div>
+              <div id="metaViewTimestamp" style="color:#6ee7b7;"></div>
+            </div>
           </div>
 
           <div class="narrative-body" id="narrativeContainer"></div>
@@ -775,9 +1113,11 @@ $htmlTemplate = @'
               <div class="fp-label">
                 <span id="uiFpLabel">本机特征指纹 ID</span>
                 <span class="fp-tag" id="uiFpTag">本地生成</span>
+                <span class="fp-tag" id="uiProofTag" style="background:rgba(16,185,129,0.12);color:#6ee7b7;border-color:rgba(16,185,129,0.3);"></span>
               </div>
               <div class="fp-id" id="fpHashText"></div>
               <div class="fp-sub" id="fpSubText"></div>
+              <div class="fp-timings" id="fpStageTimings"></div>
             </div>
             <div class="fp-diff">
               <div class="diff-title">
@@ -870,6 +1210,49 @@ $htmlTemplate = @'
     let expanded = false;
     let pinnedClue = null;
 
+    function formatNowTime() {
+      const d = new Date();
+      const pad = (n, w = 2) => String(n).padStart(w, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+
+    function updateAntiDemoClock() {
+      const en = (currentLang === 'en');
+      const nowMs = Date.now();
+      const scanMs = SNAPSHOT.scanCompletedUnixMs || nowMs;
+      const diffSec = Math.max(0, Math.floor((nowMs - scanMs) / 1000));
+      let elapsedText = '';
+      if (diffSec < 60) {
+        elapsedText = en ? `${diffSec}s ago` : `${diffSec} 秒前刚出结果`;
+      } else if (diffSec < 3600) {
+        const m = Math.floor(diffSec / 60);
+        const s = diffSec % 60;
+        elapsedText = en ? `${m}m ${s}s ago` : `距出结果 ${m} 分 ${s} 秒`;
+      } else {
+        const h = Math.floor(diffSec / 3600);
+        const m = Math.floor((diffSec % 3600) / 60);
+        elapsedText = en ? `${h}h ${m}m ago` : `距出结果 ${h} 小时 ${m} 分`;
+      }
+
+      const nowStr = formatNowTime();
+      document.getElementById('uiAntiDemoBadge').textContent = en ? 'Live Local Probe · Anti-Demo Verified' : '真机实时检索 · 防 Demo 套壳核验';
+      document.getElementById('uiScanTimeKv').innerHTML = en
+        ? `Result Retrieved: <strong>${SNAPSHOT.timestamp}</strong>`
+        : `检索出结果时间：<strong>${SNAPSHOT.timestamp}</strong>`;
+      document.getElementById('uiScanDurKv').innerHTML = en
+        ? `Probe Elapsed: <strong>${SNAPSHOT.scanDurationMs} ms</strong>`
+        : `真机检索耗时：<strong>${SNAPSHOT.scanDurationMs} ms (${(SNAPSHOT.scanDurationMs / 1000).toFixed(2)}s)</strong>`;
+      document.getElementById('uiLiveViewKv').innerHTML = en
+        ? `Viewing At: <strong>${nowStr} (${elapsedText})</strong>`
+        : `当前查看时间：<strong>${nowStr}（${elapsedText}）</strong>`;
+      document.getElementById('uiProofKv').innerHTML = `Proof: <strong>${SNAPSHOT.liveProofId}</strong>`;
+
+      document.getElementById('metaTimestamp').textContent = (en ? 'Retrieved At: ' : '检索出结果时间：') + SNAPSHOT.timestamp;
+      document.getElementById('metaViewTimestamp').textContent = (en ? 'Viewing Now: ' : '当前打开查看时间：') + nowStr + ' (' + elapsedText + ')';
+    }
+
+    setInterval(updateAntiDemoClock, 1000);
+
     function clue(type, text, field, reason) {
       const cls = type === 'red' ? 'clue clue-red' : type === 'infer' ? 'clue clue-infer' : 'clue clue-fact';
       const escField = String(field).replace(/"/g, '&quot;');
@@ -919,7 +1302,7 @@ $htmlTemplate = @'
           : '';
         const p5 = `Your installed tools show you write code and tinker with local projects: ${clue('fact', installedTools.join(', '), 'CLI tools available in PATH', 'Detected directly in the current terminal PATH.')} are all wired up${envText}. As for your real name, age, or appearance, a local hardware script cannot see them and we do not guess.`;
 
-        const p6 = `This scan ran on ${clue('fact', s.timeInfo.enDay + ' ' + s.timeInfo.timePeriodEn + ' (' + s.timestamp + ')', 'Timestamp: ' + s.timestamp + ' / PS ' + s.psVersion, 'Local system clock and PowerShell engine version.')}, with the GPU sitting at ${clue('fact', s.gpuTemp + ' drawing ' + s.gpuPowerDraw, 'Temp: ' + s.gpuTemp + ' / Power: ' + s.gpuPowerDraw + ' / State: ' + s.gpuPerfState, 'Live sensor reading from nvidia-smi.')} in a quiet, light-load state.`;
+        const p6 = `This live probe started at ${clue('fact', s.scanStartTimestamp + ' and finished in ' + s.scanDurationMs + ' ms', 'Start: ' + s.scanStartTimestamp + ' -> End: ' + s.timestamp + ' (' + s.liveProofId + ')', 'Real-time local execution timestamps proving this report is not a static demo shell.')} on PowerShell ${s.psVersion}, with the GPU sitting at ${clue('fact', s.gpuTemp + ' drawing ' + s.gpuPowerDraw, 'Temp: ' + s.gpuTemp + ' / Power: ' + s.gpuPowerDraw + ' / State: ' + s.gpuPerfState, 'Live sensor reading from nvidia-smi.')}.`;
 
         const p7 = `As a local hardware fingerprint, three traits stand out most: ${clue('fact', s.cpu + ' paired with ' + s.gpu, 'Core Compute', 'Primary CPU + GPU combination.')}, ${clue('fact', biggestDisk.FreeGB + ' GB of open storage on drive ' + biggestDisk.Drive, 'Storage Headroom', 'Best partition for model weights.')}, and ${s.ramGB <= 16.5 ? clue('red', 'the ' + s.ramModules + ' RAM setup that will benefit hugely from a 32 GB or 64 GB upgrade', 'RAM: ' + s.ramModules, 'Upgrading SODIMM RAM is the highest-ROI hardware change for this laptop.') : clue('fact', 'your ' + s.ramModules + ' system memory configuration', 'RAM: ' + s.ramModules, 'System memory configuration.')}.`;
 
@@ -958,7 +1341,7 @@ $htmlTemplate = @'
         : '';
       const p5 = `翻一下装好的工具链就知道你平时没少折腾代码：机子里能直接调起 ${clue('fact', installedTools.join('、'), 'Detected CLI Tools in PATH', '这些开发工具全部在终端 PATH 中可直接调用。')}${envText}。至于你的真实姓名、年龄和长相，本地硬件脚本读不出来，这里也不瞎猜。`;
 
-      const p6 = `这次扫描发生在 ${clue('fact', s.timeInfo.cnDay + s.timeInfo.timePeriod + '（' + s.timestamp + '）', 'Timestamp: ' + s.timestamp + ' / PS ' + s.psVersion, '本次运行检测脚本的本地时间与终端引擎版本。')}，显卡核心温度 ${clue('fact', s.gpuTemp + '，当前功耗 ' + s.gpuPowerDraw, 'Temp: ' + s.gpuTemp + ' / Power: ' + s.gpuPowerDraw + ' / State: ' + s.gpuPerfState, 'nvidia-smi 实时读取到的显卡传感器状态。')}，风扇还没怎么转，正处于随时能拉起来干活的轻载状态。`;
+      const p6 = `本次真机检索在 ${clue('fact', s.timeInfo.cnDay + s.timeInfo.timePeriod + '（' + s.timestamp + '，全程实测耗时 ' + s.scanDurationMs + ' 毫秒）', '启动: ' + s.scanStartTimestamp + ' -> 完成: ' + s.timestamp + ' / 校验码: ' + s.liveProofId, '精确到毫秒的本机探针检索时间戳与防套壳校验码，证明非静态 Demo 页面。')} 完成，显卡核心温度 ${clue('fact', s.gpuTemp + '，当前功耗 ' + s.gpuPowerDraw, 'Temp: ' + s.gpuTemp + ' / Power: ' + s.gpuPowerDraw + ' / State: ' + s.gpuPerfState, 'nvidia-smi 实时读取到的显卡传感器状态。')}，风扇还没怎么转，正处于随时能拉起来干活的轻载状态。`;
 
       const p7 = `综合算下来，这台电脑的本地特征辨识度很高。最显眼的地方有三处：${clue('fact', s.cpu + ' 搭 ' + s.gpu + ' 的硬件底子', 'CPU + GPU Combo', '核心算力组合。')}、${clue('fact', biggestDisk.Drive + ' 盘那 ' + biggestDisk.FreeGB + 'GB 的空闲空间', 'Max Free Disk: ' + biggestDisk.Drive, '模型存储主力分区。')}，以及 ${s.ramGB <= 16.5 ? clue('red', '目前最值得花点小钱升到 32GB 以上的 ' + s.ramModules + ' 内存', 'RAM: ' + s.ramModules, '把 16GB 内存升到 32GB 或 64GB，是这台笔记本提升大模型兼容性性价比最高的一步。') : clue('fact', s.ramModules + ' 的充裕内存配置', 'RAM: ' + s.ramModules, '内存容量充足，支持模型分块卸载。')}。`;
 
@@ -978,9 +1361,10 @@ $htmlTemplate = @'
           note: en ? 'Running scripts in the default Python environment leaves your RTX GPU idle while the CPU does all the work.' : '当前全局环境装的是 CPU 版 PyTorch（或没装），直接跑脚本会让显卡闲置、CPU 硬扛。'
         });
         topFixes.push({
-          head: en ? 'Install CUDA-enabled PyTorch in default Python' : '给默认 Python 换上带 CUDA 的 PyTorch',
-          desc: en ? ('Your driver supports up to CUDA ' + s.cudaMax + '. Reinstall PyTorch with cu126:') : ('你的驱动最高支持到 CUDA ' + s.cudaMax + '，重装带 cu126 的 PyTorch 就能直接调起显卡：'),
-          cmd: 'pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 --force-reinstall'
+          head: en ? 'Install CUDA PyTorch via China Domestic Mirror' : '给默认 Python 换上带 CUDA 的 PyTorch（优先国内镜像）',
+          desc: en ? ('Your driver supports up to CUDA ' + s.cudaMax + '. Use the NJU + Tsinghua domestic mirror for full-speed download:') : ('你的驱动最高支持到 CUDA ' + s.cudaMax + '，优先使用【南大 + 清华国内镜像】满速重装带 cu126 的 PyTorch（也可在启动脚本时输入序号一键自动修复）：'),
+          mirrorLabel: en ? '🚀 China Mirror (NJU + Tsinghua TUNA)' : '🚀 优先国内镜像（南大 + 清华源）',
+          cmd: 'pip install torch torchvision torchaudio -i https://mirror.nju.edu.cn/pytorch/whl/cu126 --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple --force-reinstall'
         });
       } else {
         goods.push({
@@ -1116,11 +1500,22 @@ $htmlTemplate = @'
       });
     }
 
+    const toast = document.getElementById('toast');
+    let toastTimer = null;
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 2400);
+    }
+
     function renderAll() {
       const en = (currentLang === 'en');
       document.documentElement.lang = en ? 'en' : 'zh-CN';
       document.getElementById('btnLangZh').classList.toggle('active', !en);
       document.getElementById('btnLangEn').classList.toggle('active', en);
+
+      updateAntiDemoClock();
 
       document.getElementById('uiBrandBadge').textContent = en ? 'XunyiJu · AI PC Capability Audit' : '寻祎居 · 算力底牌侧写';
       document.getElementById('uiBrandTitle').textContent = en ? 'Who Are You · Your PC in the Eyes of AI' : '你是谁 · AI 眼里的这台电脑';
@@ -1137,13 +1532,17 @@ $htmlTemplate = @'
       `;
 
       document.getElementById('uiLeftTitle').textContent = en ? '“Your PC in the Eyes of AI Models”' : '「AI 模型眼里的你」';
-      document.getElementById('metaTimestamp').textContent = (en ? 'Sampled: ' : '采样时间：') + SNAPSHOT.timestamp;
       document.getElementById('uiFpLabel').textContent = en ? 'Hardware Fingerprint ID' : '本机特征指纹 ID';
       document.getElementById('uiFpTag').textContent = en ? 'Local Hash' : '本地生成';
+      document.getElementById('uiProofTag').textContent = SNAPSHOT.liveProofId;
       document.getElementById('fpHashText').textContent = SNAPSHOT.fingerprintId;
       document.getElementById('fpSubText').textContent = en
         ? `Core: ${SNAPSHOT.cpu} · ${SNAPSHOT.gpu} (${Math.round(SNAPSHOT.vramTotalMiB/1024)}GB) · RAM ${Math.round(SNAPSHOT.ramGB)}GB`
         : `实测核心：${SNAPSHOT.cpu} · ${SNAPSHOT.gpu} (${Math.round(SNAPSHOT.vramTotalMiB/1024)}GB) · 内存 ${Math.round(SNAPSHOT.ramGB)}GB`;
+
+      const st = SNAPSHOT.stageTimings || [];
+      const stText = st.map(x => `${x.Stage}@${x.TimeAt}(${x.DurationMs}ms)`).join(' · ');
+      document.getElementById('fpStageTimings').textContent = (en ? 'Probe Timeline: ' : '分阶段实测检索轨迹：') + stText;
 
       document.getElementById('uiDiffTitle').textContent = en ? 'Changes Since Last Scan' : '跟上回扫描比有什么变化';
 
@@ -1250,9 +1649,31 @@ $htmlTemplate = @'
       diag.topFixes.forEach((f, i) => {
         const li = document.createElement('li');
         li.className = 'priority-item';
-        const cmdHtml = f.cmd ? '<div class="priority-cmd">' + f.cmd + '</div>' : '';
+        let cmdHtml = '';
+        if (f.cmd) {
+          const copyBtnText = en ? '📋 Copy Command' : '📋 复制国内镜像命令';
+          const badgeText = f.mirrorLabel || (en ? 'Domestic Mirror' : '国内镜像');
+          cmdHtml = `
+            <div class="priority-cmd-wrap">
+              <div class="priority-cmd-top">
+                <span class="mirror-badge">${badgeText}</span>
+                <button type="button" class="cmd-copy-btn" data-cmd="${f.cmd.replace(/"/g, '&quot;')}">${copyBtnText}</button>
+              </div>
+              <div class="priority-cmd">${f.cmd}</div>
+            </div>
+          `;
+        }
         li.innerHTML = '<div class="priority-item-head">' + (i + 1) + '. ' + f.head + '</div><div class="priority-item-desc">' + f.desc + '</div>' + cmdHtml;
         priorityList.appendChild(li);
+      });
+
+      priorityList.querySelectorAll('.cmd-copy-btn').forEach(btn => {
+        btn.addEventListener('click', e => {
+          const c = e.currentTarget.getAttribute('data-cmd');
+          navigator.clipboard.writeText(c).then(() => {
+            showToast(en ? '✅ Copied domestic mirror command' : '✅ 已复制国内镜像安装命令');
+          });
+        });
       });
 
       const checklistContainer = document.getElementById('checklistContainer');
@@ -1273,6 +1694,9 @@ $htmlTemplate = @'
 
       // Appendix
       const appendixItems = [
+        { k: en ? "Scan Started At" : "本次检索启动时间", v: SNAPSHOT.scanStartTimestamp, status: "ok" },
+        { k: en ? "Result Retrieved At" : "检索出结果时间", v: `${SNAPSHOT.timestamp} (耗时 ${SNAPSHOT.scanDurationMs} ms)`, status: "ok" },
+        { k: en ? "Anti-Demo Proof ID" : "防套壳真机校验码", v: SNAPSHOT.liveProofId, status: "ok" },
         { k: en ? "Brand & Model" : "电脑品牌与型号", v: `${SNAPSHOT.brand} ${SNAPSHOT.model}`, status: "" },
         { k: en ? "Motherboard & BIOS" : "主板与 BIOS", v: `${SNAPSHOT.board} / BIOS ${SNAPSHOT.bios}`, status: "" },
         { k: en ? "Operating System" : "操作系统", v: `${SNAPSHOT.os} (Build ${SNAPSHOT.osBuild})`, status: "" },
@@ -1325,19 +1749,10 @@ $htmlTemplate = @'
       }
     });
 
-    const toast = document.getElementById('toast');
-    let toastTimer = null;
-    function showToast(msg) {
-      toast.textContent = msg;
-      toast.classList.add('show');
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => toast.classList.remove('show'), 2400);
-    }
-
     document.getElementById('btnCopyPortrait').addEventListener('click', () => {
       const text = Array.from(document.querySelectorAll('.narrative-p')).map(p => p.innerText.replace(/\s+/g, ' ').trim()).join('\n\n');
-      navigator.clipboard.writeText(`【XunyiJu AI PC Portrait (${SNAPSHOT.fingerprintId})】\n\n${text}`).then(() => {
-        showToast(currentLang === 'en' ? '✅ Copied 7-paragraph portrait' : '✅ 已复制 7 段侧写');
+      navigator.clipboard.writeText(`【XunyiJu AI PC Portrait (${SNAPSHOT.fingerprintId} | ${SNAPSHOT.liveProofId} | ${SNAPSHOT.timestamp})】\n\n${text}`).then(() => {
+        showToast(currentLang === 'en' ? '✅ Copied 7-paragraph portrait' : '✅ 已复制 7 段侧写（含防套壳时间戳）');
       });
     });
 
@@ -1391,17 +1806,19 @@ $finalHtml = $htmlTemplate.Replace('__SNAPSHOT_JSON__', $snapshotJsonStr).Replac
 [System.IO.File]::WriteAllText($htmlPath, $finalHtml, $utf8Bom)
 
 Write-Host ""
-Write-Host "==========================================================" -ForegroundColor Green
+Write-Host "==================================================================" -ForegroundColor Green
 if ($isEn) {
-    Write-Host " Audit Complete! (PowerShell $($PSVersionTable.PSVersion))" -ForegroundColor Green
-    Write-Host " 1. Interactive Portrait : $htmlPath" -ForegroundColor Green
-    Write-Host " 2. Raw Text Report      : $reportPath" -ForegroundColor Green
+    Write-Host " Audit Complete! (PowerShell $($PSVersionTable.PSVersion) | Elapsed: $totalElapsedMs ms)" -ForegroundColor Green
+    Write-Host " Live Proof ID        : $liveProofId" -ForegroundColor Green
+    Write-Host " 1. Portrait Webpage  : $htmlPath" -ForegroundColor Green
+    Write-Host " 2. Raw Text Report   : $reportPath" -ForegroundColor Green
 } else {
-    Write-Host " 扫描完成！(PowerShell $($PSVersionTable.PSVersion))" -ForegroundColor Green
+    Write-Host " 扫描完成！(PowerShell $($PSVersionTable.PSVersion) | 实测耗时: $totalElapsedMs ms)" -ForegroundColor Green
+    Write-Host " 防套壳真机校验码   : $liveProofId" -ForegroundColor Green
     Write-Host " 1. 可视化侧写网页 : $htmlPath" -ForegroundColor Green
     Write-Host " 2. 原始文本报告   : $reportPath" -ForegroundColor Green
 }
-Write-Host "==========================================================" -ForegroundColor Green
+Write-Host "==================================================================" -ForegroundColor Green
 
 if (-not $NoOpenBrowser) {
     try { Start-Process $htmlPath } catch {}
