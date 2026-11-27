@@ -45,19 +45,26 @@ $hasPython = [bool](Get-Command python -ErrorAction SilentlyContinue)
 $hasPip    = [bool](Get-Command pip -ErrorAction SilentlyContinue)
 $hasNvidiaSmi = [bool](Get-Command nvidia-smi -ErrorAction SilentlyContinue)
 
-# Quick pre-check of PyTorch CUDA status in default Python
+# Quick pre-check of PyTorch CUDA status in default Python (distinguishing CUDA build support vs runtime availability)
+$prePyPath         = 'Not Found'
 $preTorchInstalled = $false
+$preTorchCudaBuilt = $false
+$preTorchCudaRt    = 'None'
 $preTorchCudaOk    = $false
 $preTorchVer       = 'Not Installed'
 if ($hasPython) {
     try {
-        $preOut = & python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $preOut) {
-            $lines = @($preOut -split "`r?`n" | Where-Object { $_ })
-            if ($lines.Count -ge 2) {
-                $preTorchInstalled = $true
-                $preTorchVer       = $lines[0].Trim()
-                $preTorchCudaOk    = ($lines[1].Trim() -eq 'True')
+        $preOut = & python -c "import sys; print('EXEC=' + sys.executable); import torch; print('VER=' + str(torch.__version__)); print('RT=' + str(torch.version.cuda)); print('OK=' + str(torch.cuda.is_available()))" 2>$null
+        if ($preOut) {
+            foreach ($line in ($preOut -split "`r?`n")) {
+                if ($line -match '^EXEC=(.+)$') {
+                    $p = $Matches[1].Trim()
+                    if ($env:USERPROFILE) { $p = $p.Replace($env:USERPROFILE, '%USERPROFILE%') }
+                    $prePyPath = $p
+                }
+                if ($line -match '^VER=(.+)$') { $preTorchInstalled = $true; $preTorchVer = $Matches[1].Trim() }
+                if ($line -match '^RT=(.+)$')  { $preTorchCudaRt = $Matches[1].Trim(); $preTorchCudaBuilt = ($preTorchCudaRt -ne 'None' -and $preTorchCudaRt -ne '') }
+                if ($line -match '^OK=(.+)$')  { $preTorchCudaOk = ($Matches[1].Trim() -eq 'True') }
             }
         }
     } catch {}
@@ -73,8 +80,17 @@ if ([string]::IsNullOrWhiteSpace($Language)) {
     Write-Host ("    - 简体中文语言支持 (zh-CN) : " + ($(if ($hasZhPack) { "已内置 / Ready" } else { "未检出中文语言包 / Missing zh-CN pack" }))) -ForegroundColor ($(if ($hasZhPack) { "Green" } else { "Red" }))
     Write-Host ("    - 英文语言支持 (en-US)     : 已内置 / Ready") -ForegroundColor Green
     Write-Host ("    - PowerShell 7+ (pwsh)     : " + ($(if ($hasPwsh7) { "已安装 / Installed (当前 v$($PSVersionTable.PSVersion))" } else { "未安装 (当前为旧版 PS $($PSVersionTable.PSVersion))" }))) -ForegroundColor ($(if ($hasPwsh7) { "Green" } else { "Yellow" }))
-    Write-Host ("    - Python 运行环境          : " + ($(if ($hasPython) { "已安装 / Installed" } else { "未安装 / Missing (无法深度检测 AI 库)" }))) -ForegroundColor ($(if ($hasPython) { "Green" } else { "Red" }))
-    Write-Host ("    - 默认 Python PyTorch CUDA : " + ($(if ($preTorchCudaOk) { "已就绪 / CUDA Active ($preTorchVer)" } elseif ($preTorchInstalled) { "仅 CPU 版 ($preTorchVer，无法调显卡)" } else { "未安装 PyTorch" }))) -ForegroundColor ($(if ($preTorchCudaOk) { "Green" } else { "Yellow" }))
+    Write-Host ("    - 实际检测的默认 Python    : " + ($(if ($hasPython) { "$prePyPath (注: ComfyUI/Conda 可能使用独立环境)" } else { "未安装 / Missing (无法深度检测 AI 库)" }))) -ForegroundColor ($(if ($hasPython) { "Green" } else { "Red" }))
+    $torchStatusStr = if (-not $preTorchInstalled) {
+        "未在此默认 Python 中安装 PyTorch"
+    } elseif ($preTorchCudaBuilt -and $preTorchCudaOk) {
+        "支持 CUDA ($preTorchCudaRt) 且当前可用 ($preTorchVer)"
+    } elseif ($preTorchCudaBuilt -and (-not $preTorchCudaOk)) {
+        "已装支持 CUDA ($preTorchCudaRt) 的版本 ($preTorchVer)，但当前无法调起显卡 (无需重装 PyTorch，请查驱动)"
+    } else {
+        "纯 CPU 构建版 ($preTorchVer，不支持 CUDA)"
+    }
+    Write-Host ("    - 默认 Python PyTorch 状态 : " + $torchStatusStr) -ForegroundColor ($(if ($preTorchCudaOk) { "Green" } else { "Yellow" }))
     Write-Host "------------------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host "  请选择界面与报告语言 / Please select language:" -ForegroundColor Yellow
     Write-Host "    [1] 简体中文 (Simplified Chinese)  [默认 / Default]" -ForegroundColor White
@@ -95,7 +111,7 @@ if ([string]::IsNullOrWhiteSpace($Language)) {
 $isEn = ($Language -eq 'en')
 
 # ==============================================================================
-# 0.5 缺失内置语言或核心运行环境时，提示并通过国内镜像一键下载/修复
+# 0.5 缺失内置语言或基础解释器时，提示是否通过国内镜像补齐（默认绝不提示强制重装 PyTorch）
 # ==============================================================================
 $missingItems = New-Object 'System.Collections.Generic.List[hashtable]'
 
@@ -124,15 +140,6 @@ if (-not $hasPwsh7) {
         NameEn = 'PowerShell 7 Modern Shell (Domestic Mirror Priority)'
         DescZh = '当前正在使用 Windows 旧版 PowerShell 5.1，建议升级至 PowerShell 7 以避免 UTF-8 编码问题。'
         DescEn = 'Currently running on legacy Windows PowerShell 5.1; PowerShell 7 is recommended for full UTF-8 support.'
-    })
-}
-if ($hasPython -and $hasNvidiaSmi -and (-not $preTorchCudaOk)) {
-    $missingItems.Add(@{
-        Id = 'pytorch_cuda'
-        NameZh = '为默认 Python 安装/更换带 CUDA 的 PyTorch（南大/清华国内镜像）'
-        NameEn = 'Install/Replace CUDA-enabled PyTorch in default Python (NJU/Tsinghua China Mirror)'
-        DescZh = "检测到你有 NVIDIA 显卡，但默认 Python 的 PyTorch 为 [$preTorchVer (CUDA=False)]，直接跑脚本无法调用显卡。"
-        DescEn = "NVIDIA GPU detected, but default Python PyTorch is [$preTorchVer (CUDA=False)] and cannot use the GPU."
     })
 }
 
@@ -438,37 +445,50 @@ if (Get-Command conda -ErrorAction SilentlyContinue) {
     } catch {}
 }
 
-$torchVer = 'Not Installed'
-$torchCudaVer = 'None'
+$torchPyPath    = 'Not Found'
+$torchVer       = 'Not Installed'
+$torchCudaBuilt = 'False'
+$torchCudaVer   = 'None'
 $torchCudaAvail = 'False'
 $transformersVer = 'Not Installed'
-$onnxVer = 'Not Installed'
+$onnxVer        = 'Not Installed'
 
 if (Get-Command python -ErrorAction SilentlyContinue) {
     $pyMiniProbe = @'
+import sys
 import importlib.metadata as md
 def v(n):
     try: return md.version(n)
     except: return "not_installed"
+print("EXEC=" + sys.executable)
 print("TORCH=" + v("torch"))
 print("TRANSFORMERS=" + v("transformers"))
 print("ONNX=" + v("onnxruntime"))
 try:
     import torch
-    print("CUDA_RT=" + str(torch.version.cuda))
+    rt = torch.version.cuda
+    print("CUDA_RT=" + str(rt))
+    print("CUDA_BUILT=" + ("True" if (rt is not None and str(rt) != "None" and str(rt) != "") else "False"))
     print("CUDA_OK=" + str(torch.cuda.is_available()))
 except:
     print("CUDA_RT=None")
+    print("CUDA_BUILT=False")
     print("CUDA_OK=False")
 '@
     try {
         $probeLines = & python -c $pyMiniProbe 2>$null
         foreach ($l in $probeLines) {
-            if ($l -match '^TORCH=(.+)$') { $torchVer = $Matches[1] }
-            if ($l -match '^TRANSFORMERS=(.+)$') { $transformersVer = $Matches[1] }
-            if ($l -match '^ONNX=(.+)$') { $onnxVer = $Matches[1] }
-            if ($l -match '^CUDA_RT=(.+)$') { $torchCudaVer = $Matches[1] }
-            if ($l -match '^CUDA_OK=(.+)$') { $torchCudaAvail = $Matches[1] }
+            if ($l -match '^EXEC=(.+)$') {
+                $p = $Matches[1].Trim()
+                if ($env:USERPROFILE) { $p = $p.Replace($env:USERPROFILE, '%USERPROFILE%') }
+                $torchPyPath = $p
+            }
+            if ($l -match '^TORCH=(.+)$') { $torchVer = $Matches[1].Trim() }
+            if ($l -match '^TRANSFORMERS=(.+)$') { $transformersVer = $Matches[1].Trim() }
+            if ($l -match '^ONNX=(.+)$') { $onnxVer = $Matches[1].Trim() }
+            if ($l -match '^CUDA_RT=(.+)$') { $torchCudaVer = $Matches[1].Trim() }
+            if ($l -match '^CUDA_BUILT=(.+)$') { $torchCudaBuilt = $Matches[1].Trim() }
+            if ($l -match '^CUDA_OK=(.+)$') { $torchCudaAvail = $Matches[1].Trim() }
         }
     } catch {}
 }
@@ -667,11 +687,13 @@ $snapshotObj = [ordered]@{
     }
     condaEnvs = $customEnvs
     torch = [ordered]@{
-        version = $torchVer
-        cudaRuntime = $torchCudaVer
+        pythonPath    = $torchPyPath
+        version       = $torchVer
+        cudaBuilt     = $torchCudaBuilt
+        cudaRuntime   = $torchCudaVer
         cudaAvailable = $torchCudaAvail
-        transformers = $transformersVer
-        onnxruntime = $onnxVer
+        transformers  = $transformersVer
+        onnxruntime   = $onnxVer
     }
     timeInfo = [ordered]@{
         cnDay = $cnDay
@@ -1279,12 +1301,21 @@ $htmlTemplate = @'
         } else if (s.vramTotalMiB === 0) {
           p2Parts.push(`${clue('red', 'no active NVIDIA discrete GPU was detected', 'GPU: ' + s.gpu, 'Without an NVIDIA GPU and driver, local generation falls back to CPU.')}`);
         }
-        if (s.torch.cudaAvailable !== 'True') {
-          p2Parts.push(`${clue('red', 'your default Python has a CPU-only build of PyTorch', 'torch: ' + s.torch.version + ' / torch.cuda.is_available: ' + s.torch.cudaAvailable, 'Running scripts in the default Python environment will ignore your RTX GPU completely.')}`);
+        const pyPath = s.torch.pythonPath || 'default python';
+        const torchInstalled = (s.torch.version && s.torch.version !== 'not_installed' && s.torch.version !== 'Not Installed');
+        const cudaBuilt = (s.torch.cudaBuilt === 'True' || (s.torch.cudaRuntime && s.torch.cudaRuntime !== 'None'));
+        const cudaAvail = (s.torch.cudaAvailable === 'True');
+
+        if (!torchInstalled) {
+          p2Parts.push(`${clue('infer', 'PyTorch is not installed in the probed default Python (' + pyPath + ')', 'Probed Python: ' + pyPath + ' / torch: not_installed', 'Note: ComfyUI Portable/Desktop and Conda environments use their own isolated Python runtimes, so you do not need PyTorch in the system default Python unless you run scripts there directly.')}`);
+        } else if (cudaBuilt && !cudaAvail) {
+          p2Parts.push(`${clue('red', 'PyTorch in ' + pyPath + ' IS built with CUDA (' + s.torch.cudaRuntime + '), but CUDA is currently unavailable at runtime', 'Probed Python: ' + pyPath + ' | torch: ' + s.torch.version + ' | CUDA Build: ' + s.torch.cudaRuntime + ' | cuda.is_available: False', 'Do NOT reinstall PyTorch! The package already supports CUDA, but the GPU driver is not responding, outdated, or disabled in this session.')}`);
+        } else if (!cudaBuilt) {
+          p2Parts.push(`${clue('red', 'the probed default Python (' + pyPath + ') has a CPU-only build of PyTorch', 'Probed Python: ' + pyPath + ' | torch: ' + s.torch.version + ' | CUDA Build: None', 'Note: This only applies to the system default Python (' + pyPath + '). ComfyUI or Conda environments use their own separate Python runtimes.')}`);
         }
         const p2 = p2Parts.length > 0
-          ? `Two things will trip you up right now when running local AI: ${p2Parts.join('; and ')}.`
-          : `Your VRAM, system RAM, and default PyTorch CUDA runtime are properly aligned with no obvious showstoppers.`;
+          ? `Things to note when running local AI: ${p2Parts.join('; and ')}.`
+          : `Your VRAM, system RAM, and the PyTorch CUDA runtime in ${clue('fact', pyPath, 'Probed Python: ' + pyPath + ' | torch: ' + s.torch.version, 'Actual Python executable probed in this session (ComfyUI/Conda may use separate environments).')} are properly aligned.`;
 
         let tierText = 'a solid everyday PC';
         if (s.vramTotalMiB >= 15500) tierText = 'a heavy-duty local AI rig';
@@ -1318,12 +1349,21 @@ $htmlTemplate = @'
       } else if (s.vramTotalMiB === 0) {
         p2Parts.push(`最明显的是 ${clue('red', '机子里没检出能干活的 NVIDIA 独显', 'GPU: ' + s.gpu, '没有独显或者没装好 NVIDIA 驱动，本地跑生图和视频只能靠 CPU 硬扛。')}`);
       }
-      if (s.torch.cudaAvailable !== 'True') {
-        p2Parts.push(`另一个是 ${clue('red', '默认 Python 里装的是不能调显卡的 CPU 版 PyTorch', 'torch: ' + s.torch.version + ' / torch.cuda.is_available: ' + s.torch.cudaAvailable, '全局 Python 环境的 PyTorch 没带 CUDA 支持，直接运行脚本时显卡根本不会参与计算。')}`);
+      const pyPathZh = s.torch.pythonPath || '当前终端默认 Python';
+      const torchInstalledZh = (s.torch.version && s.torch.version !== 'not_installed' && s.torch.version !== 'Not Installed');
+      const cudaBuiltZh = (s.torch.cudaBuilt === 'True' || (s.torch.cudaRuntime && s.torch.cudaRuntime !== 'None'));
+      const cudaAvailZh = (s.torch.cudaAvailable === 'True');
+
+      if (!torchInstalledZh) {
+        p2Parts.push(`另外在本次检测的默认 Python（${clue('fact', pyPathZh, '实际检测 Python 路径: ' + pyPathZh, '仅代表当前终端 PATH 命中的默认 Python；ComfyUI 便携版 (python_embeded)、桌面版或 Conda 环境各自有独立的 Python。')}）里暂未安装 PyTorch（如果你平时用 ComfyUI 或 Conda 独立环境，这完全正常，无需在默认 Python 里安装）`);
+      } else if (cudaBuiltZh && !cudaAvailZh) {
+        p2Parts.push(`另一个是本次检测的 Python（${clue('fact', pyPathZh, '实际检测 Python 路径: ' + pyPathZh, '本次探针实际检测的 Python 解释器路径。')}）虽然 ${clue('red', '已经装了支持 CUDA ' + s.torch.cudaRuntime + ' 的 PyTorch，但当前却无法调起显卡', 'torch: ' + s.torch.version + ' | 支持 CUDA: ' + s.torch.cudaRuntime + ' | 当前可用: False', '注意：安装包本身已经是支持 CUDA 的版本，不是 CPU 版！千万别盲目重装 PyTorch，请优先检查 NVIDIA 显卡驱动版本、是否刚更完驱动没重启，或设备管理器中独显是否异常。')}`);
+      } else if (!cudaBuiltZh) {
+        p2Parts.push(`另一个是本次检测的默认 Python（${clue('fact', pyPathZh, '实际检测 Python 路径: ' + pyPathZh, '注意：这只是系统默认 Python，不一定是 ComfyUI 或 Conda 正在用的环境。')}）里 ${clue('red', '装的是不支持 CUDA 的纯 CPU 构建版 PyTorch', 'torch: ' + s.torch.version + ' | 支持 CUDA: False (torch.version.cuda=None) | 当前可用: False', '只有当你确实直接用这个默认 Python 跑 AI 脚本时才需要换装；若你用的是 ComfyUI 内置环境或 Conda 虚拟环境，请勿在默认 Python 中盲目重装。')}`);
       }
       const p2 = p2Parts.length > 0
-        ? `真要跑起本地 AI，这台电脑目前有两处容易掉链子的地方：${p2Parts.join('；')}。`
-        : `从底层配置看，你的显存、内存和默认 PyTorch CUDA 环境都已经对齐，没有那种一跑脚本就报错的低级暗坑。`;
+        ? `真要跑起本地 AI，这台电脑目前需要注意的地方有：${p2Parts.join('；')}。`
+        : `从底层配置看，你的显存、内存以及本次检测的默认 Python（${clue('fact', pyPathZh, '实际检测路径: ' + pyPathZh + ' | torch: ' + s.torch.version, '支持 CUDA ' + s.torch.cudaRuntime + ' 且当前 torch.cuda.is_available()=True。注：ComfyUI/Conda 可能使用各自独立的 Python 环境。')}）都已经打通显卡 CUDA 加速。`;
 
       let tierText = '中规中矩的家用办公机';
       if (s.vramTotalMiB >= 15500) tierText = '能直接硬啃大模型的重型算力机';
@@ -1354,23 +1394,65 @@ $htmlTemplate = @'
       const topFixes = [];
       const en = (lang === 'en');
 
-      if (s.torch.cudaAvailable !== 'True') {
+      const pyPath = s.torch.pythonPath || 'default python';
+      const torchInstalled = (s.torch.version && s.torch.version !== 'not_installed' && s.torch.version !== 'Not Installed');
+      const cudaBuilt = (s.torch.cudaBuilt === 'True' || (s.torch.cudaRuntime && s.torch.cudaRuntime !== 'None'));
+      const cudaAvail = (s.torch.cudaAvailable === 'True');
+
+      if (!torchInstalled) {
+        issues.push({
+          level: 'amber',
+          title: en ? ('No PyTorch in probed default Python (' + pyPath + ')') : ('本次检测的默认 Python 未安装 PyTorch'),
+          note: en
+            ? ('Probed path: ' + pyPath + '. Note: ComfyUI Portable (python_embeded), ComfyUI Desktop, and Conda environments use their own isolated Python runtimes. You do NOT need to install PyTorch here unless you run scripts directly with this default Python.')
+            : ('实际检测路径：' + pyPath + '。注意：这只是系统默认 Python，不一定是 ComfyUI 或 Conda 正在用的环境。如果你平时用 ComfyUI 便携版/桌面版或 Conda 虚拟环境，它们有自己独立的 Python，无需在系统默认 Python 中安装。')
+        });
+      } else if (cudaBuilt && !cudaAvail) {
         issues.push({
           level: 'red',
-          title: en ? 'Default Python PyTorch cannot use the GPU (CPU-only)' : '默认 Python 的 PyTorch 调不到显卡',
-          note: en ? 'Running scripts in the default Python environment leaves your RTX GPU idle while the CPU does all the work.' : '当前全局环境装的是 CPU 版 PyTorch（或没装），直接跑脚本会让显卡闲置、CPU 硬扛。'
+          title: en
+            ? ('PyTorch supports CUDA (' + s.torch.cudaRuntime + '), but CUDA is currently unavailable')
+            : ('PyTorch 本身支持 CUDA (' + s.torch.cudaRuntime + ')，但当前无法调起显卡'),
+          note: en
+            ? ('Probed path: ' + pyPath + ' | torch ' + s.torch.version + '. Do NOT reinstall PyTorch—your package is already a CUDA build! Check if your NVIDIA driver is too old for CUDA ' + s.torch.cudaRuntime + ', needs a reboot after driver update, or the GPU is disabled.')
+            : ('实际检测路径：' + pyPath + '（torch ' + s.torch.version + '）。注意：你装的已经是支持 CUDA ' + s.torch.cudaRuntime + ' 的版本，并非 CPU 版，切勿盲目重装 PyTorch！当前 cuda.is_available()=False 通常是因为显卡驱动版本低于 CUDA ' + s.torch.cudaRuntime + ' 要求、刚更新驱动尚未重启，或独显在设备管理器中异常。')
         });
         topFixes.push({
-          head: en ? 'Install CUDA PyTorch via China Domestic Mirror' : '给默认 Python 换上带 CUDA 的 PyTorch（优先国内镜像）',
-          desc: en ? ('Your driver supports up to CUDA ' + s.cudaMax + '. Use the NJU + Tsinghua domestic mirror for full-speed download:') : ('你的驱动最高支持到 CUDA ' + s.cudaMax + '，优先使用【南大 + 清华国内镜像】满速重装带 cu126 的 PyTorch（也可在启动脚本时输入序号一键自动修复）：'),
-          mirrorLabel: en ? '🚀 China Mirror (NJU + Tsinghua TUNA)' : '🚀 优先国内镜像（南大 + 清华源）',
-          cmd: 'pip install torch torchvision torchaudio -i https://mirror.nju.edu.cn/pytorch/whl/cu126 --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple --force-reinstall'
+          head: en ? 'Check NVIDIA Driver / Reboot (Do NOT reinstall PyTorch)' : '排查显卡驱动或重启电脑（无需重装 PyTorch！）',
+          desc: en
+            ? ('PyTorch in ' + pyPath + ' already has CUDA ' + s.torch.cudaRuntime + ' compiled in, so reinstalling PyTorch will not help. Run nvidia-smi to verify your driver and reboot if you recently updated drivers.')
+            : ('实测 ' + pyPath + ' 下的 PyTorch (' + s.torch.version + ') 已经内置 CUDA ' + s.torch.cudaRuntime + ' 支持，重装 PyTorch 毫无意义。请检查 NVIDIA 驱动版本（当前最高支持 CUDA ' + s.cudaMax + '）或重启系统让驱动生效。'),
+          cmd: ''
+        });
+      } else if (!cudaBuilt) {
+        issues.push({
+          level: 'amber',
+          title: en
+            ? ('Probed default Python has a CPU-only PyTorch build (' + s.torch.version + ')')
+            : ('本次检测的默认 Python 装的是纯 CPU 构建版 PyTorch (' + s.torch.version + ')'),
+          note: en
+            ? ('Probed path: ' + pyPath + ' (torch.version.cuda=None). Note: ComfyUI and Conda environments use their own separate Python. Only replace this if you directly run AI scripts using this exact Python executable.')
+            : ('实际检测路径：' + pyPath + '（支持 CUDA: 否 / 当前可用: 否）。特别提醒：报告测的只是系统默认 Python，不一定是 ComfyUI 或 Conda 正在用的环境！如果你平时只用 ComfyUI 便携版/桌面版或特定 Conda 环境，请直接忽略此项，不要按下面命令重装。')
+        });
+        topFixes.push({
+          head: en
+            ? 'Optional: Switch default Python PyTorch to CUDA build (Skip if using ComfyUI/Conda)'
+            : '【仅当你直接用该默认 Python 跑 AI 时】为其换装支持 CUDA 的 PyTorch',
+          desc: en
+            ? ('Target Python: ' + pyPath + '. If you use ComfyUI Portable/Desktop or Conda, skip this! Only run if you use this exact default Python:')
+            : ('目标路径：' + pyPath + '。如果你平时使用的是 ComfyUI 独立环境或 Conda 虚拟环境，请只做扫描参考，不要执行重装！仅当你确实要用该默认 Python 直接跑 GPU 脚本时，才执行：'),
+          mirrorLabel: en ? '🚀 China Mirror (NJU + Tsinghua TUNA)' : '🚀 国内镜像（南大 + 清华源，按需可选）',
+          cmd: '"' + pyPath + '" -m pip install torch torchvision torchaudio -i https://mirror.nju.edu.cn/pytorch/whl/cu126 --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple'
         });
       } else {
         goods.push({
           level: 'green',
-          title: en ? 'Default PyTorch CUDA is active' : '默认 PyTorch 已打通显卡 CUDA',
-          note: en ? ('Global Python can directly accelerate workloads on ' + s.gpu + '.') : ('全局 Python 可直接调用 ' + s.gpu + ' 加速。')
+          title: en
+            ? ('Probed Python PyTorch supports CUDA (' + s.torch.cudaRuntime + ') and is currently active')
+            : ('本次检测的 Python 已装支持 CUDA (' + s.torch.cudaRuntime + ') 的 PyTorch 且当前可用'),
+          note: en
+            ? ('Probed path: ' + pyPath + ' | torch ' + s.torch.version + ' | CUDA Build: ' + s.torch.cudaRuntime + ' | Currently Available: True on ' + s.gpu + '. (Note: ComfyUI/Conda may use separate Python environments).')
+            : ('实际检测路径：' + pyPath + '｜版本：' + s.torch.version + '｜支持 CUDA：是 (' + s.torch.cudaRuntime + ')｜当前能用 CUDA：是 (True)，可直接调用 ' + s.gpu + '。（注：ComfyUI 等工具可能使用其他独立 Python 环境）。')
         });
       }
 
@@ -1708,9 +1790,10 @@ $htmlTemplate = @'
         { k: en ? "NVIDIA Driver & Max CUDA" : "NVIDIA 驱动与最高 CUDA", v: `Driver ${SNAPSHOT.nvDriver} / CUDA ${SNAPSHOT.cudaMax}`, status: "ok" },
         { k: en ? "GPU Power & Temp" : "显卡功耗与温度", v: `${SNAPSHOT.gpuPowerDraw} / ${SNAPSHOT.gpuPowerCap} | ${SNAPSHOT.gpuTemp} (${SNAPSHOT.gpuPerfState})`, status: "" },
         ...SNAPSHOT.disks.map(d => ({ k: en ? `Disk ${d.Drive} Space` : `磁盘 ${d.Drive} 容量`, v: `Total ${d.TotalGB} GB / Free ${d.FreeGB} GB`, status: d.FreeGB > 200 ? "ok" : d.FreeGB < 50 ? "warn" : "" })),
-        { k: en ? "Global Python" : "全局 Python", v: SNAPSHOT.tools.python, status: "ok" },
-        { k: en ? "Global PyTorch" : "全局 PyTorch 版本", v: `${SNAPSHOT.torch.version} (CUDA Runtime: ${SNAPSHOT.torch.cudaRuntime})`, status: SNAPSHOT.torch.cudaAvailable === 'True' ? "ok" : "warn" },
-        { k: "torch.cuda.is_available", v: SNAPSHOT.torch.cudaAvailable, status: SNAPSHOT.torch.cudaAvailable === 'True' ? "ok" : "warn" },
+        { k: en ? "Probed Default Python" : "全局 Python 版本", v: SNAPSHOT.tools.python, status: "ok" },
+        { k: en ? "Actual Probed Python Path" : "实际检测的 Python 路径", v: SNAPSHOT.torch.pythonPath || 'Not Found', status: "ok" },
+        { k: en ? "PyTorch Supports CUDA (Build)" : "PyTorch 构建是否支持 CUDA", v: (SNAPSHOT.torch.version === 'not_installed' || SNAPSHOT.torch.version === 'Not Installed') ? (en ? 'PyTorch Not Installed' : '未安装 PyTorch') : ((SNAPSHOT.torch.cudaBuilt === 'True' || (SNAPSHOT.torch.cudaRuntime && SNAPSHOT.torch.cudaRuntime !== 'None')) ? (en ? `Yes (${SNAPSHOT.torch.version}, CUDA ${SNAPSHOT.torch.cudaRuntime} build)` : `支持 (${SNAPSHOT.torch.version}, 内置 CUDA ${SNAPSHOT.torch.cudaRuntime})`) : (en ? `No (${SNAPSHOT.torch.version}, CPU-only build)` : `不支持 (${SNAPSHOT.torch.version}, 纯 CPU 构建版)`)), status: (SNAPSHOT.torch.cudaBuilt === 'True' || (SNAPSHOT.torch.cudaRuntime && SNAPSHOT.torch.cudaRuntime !== 'None')) ? "ok" : "warn" },
+        { k: en ? "CUDA Currently Usable (Runtime)" : "当前能否调用 CUDA (Runtime)", v: SNAPSHOT.torch.cudaAvailable === 'True' ? (en ? 'True (Currently Active)' : 'True (当前可用)') : (en ? 'False (Currently Unavailable)' : 'False (当前不可用)'), status: SNAPSHOT.torch.cudaAvailable === 'True' ? "ok" : "warn" },
         { k: en ? "Conda & Envs Count" : "Conda 状态与环境数", v: `${SNAPSHOT.tools.conda} (${SNAPSHOT.condaEnvs.length} envs)`, status: "ok" },
         { k: en ? "Conda Environments" : "Conda 环境列表", v: SNAPSHOT.condaEnvs.join(', ') || 'None', status: "" },
         { k: "uv / Git", v: `${SNAPSHOT.tools.uv} / ${SNAPSHOT.tools.git}`, status: "ok" },
